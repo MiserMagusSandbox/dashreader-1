@@ -163,8 +163,8 @@ export class MicropauseService {
   private strategies: MicropauseStrategy[];
   private enabled: boolean;
 
-  constructor(settings: DashReaderSettings) {
-    this.enabled = settings.enableMicropause;
+  constructor(settings: DashReaderSettings, enabledOverride?: boolean) {
+    this.enabled = enabledOverride ?? settings.enableMicropause;
 
     // Initialize all strategies in detection order
     // Order matters: headings first, then callouts, then markers, etc.
@@ -218,8 +218,8 @@ export class MicropauseService {
    *
    * @param settings - New settings
    */
-  updateSettings(settings: DashReaderSettings): void {
-    this.enabled = settings.enableMicropause;
+  updateSettings(settings: DashReaderSettings, enabledOverride?: boolean): void {
+    this.enabled = enabledOverride ?? settings.enableMicropause;
 
     // Recreate strategies with new multipliers
     this.strategies = [

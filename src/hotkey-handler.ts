@@ -46,8 +46,9 @@ export class HotkeyHandler {
   handleKeyPress(e: KeyboardEvent): void {
     const keyCode = e.code || e.key;
 
-    // Play/Pause with Shift+Space only
-    if (keyCode === 'Space' && e.shiftKey) {
+    // Play/Pause (Space by default)
+    if (keyCode === this.settings.hotkeyPlay) {
+      if (this.isInputFocused()) return;
       e.preventDefault();
       this.callbacks.onTogglePlay();
       return;

@@ -7,8 +7,6 @@ export interface DashReaderSettings {
   fontColor: string;
   fontFamily: string;
   showContext: boolean;
-  contextWords: number;
-  showMinimap: boolean;
   showBreadcrumb: boolean;
   enableMicropause: boolean;
   micropausePunctuation: number;
@@ -22,7 +20,6 @@ export interface DashReaderSettings {
   autoStart: boolean;
   autoStartDelay: number;
   showProgress: boolean;
-  showStats: boolean;
   hotkeyPlay: string;
   hotkeyRewind: string;
   hotkeyForward: string;
@@ -33,19 +30,46 @@ export interface DashReaderSettings {
   enableAcceleration: boolean;
   accelerationDuration: number;
   accelerationTargetWpm: number;
+  mobileFontSize: number;
+  /** Minimum font size (px) when shrinking a single long token to fit */
+  minTokenFontSize: number;
+  mobileWpm: number;
+  mobileChunkSize: number;
+  mobileShowContext: boolean;
+  mobileShowBreadcrumb: boolean;
+  mobileEnableSlowStart: boolean;
+  mobileEnableMicropause: boolean;
+  // Context is now line-based:
+  // 0 = only the anchor line (before/after on the current line)
+  // 1..10 = that many full lines above + below, plus anchor lines
+  contextLines: number;
+  mobileContextLines: number;
+  // Context font size (px), separate profiles
+  contextFontSize: number;
+  mobileContextFontSize: number;
 }
 
 export const DEFAULT_SETTINGS: DashReaderSettings = {
-  wpm: 400, // Increased from 300 (inspired by Stutter: 400-800 range)
+  wpm: 600, // Increased from 300 (inspired by Stutter: 400-800 range)
   chunkSize: 1,
   fontSize: 48,
+  mobileFontSize: 32,
+  minTokenFontSize: 12,
+  mobileWpm: 600,
+  mobileChunkSize: 1,
+  mobileShowContext: false,
+  mobileShowBreadcrumb: true,
+  mobileEnableSlowStart: true,
+  mobileEnableMicropause: true,
+  contextLines: 0,
+  mobileContextLines: 0,
+  contextFontSize: 14,
+  mobileContextFontSize: 14,
   highlightColor: '#4a9eff',
   backgroundColor: '#1e1e1e',
   fontColor: '#ffffff',
   fontFamily: 'inherit',
   showContext: false,
-  contextWords: 3,
-  showMinimap: true,
   showBreadcrumb: true,
   enableMicropause: true,
   micropausePunctuation: 2.5, // Sentence-ending punctuation (.,!?) - Stutter-inspired
@@ -59,7 +83,6 @@ export const DEFAULT_SETTINGS: DashReaderSettings = {
   autoStart: false,
   autoStartDelay: 3,
   showProgress: true,
-  showStats: true,
   hotkeyPlay: 'Space',
   hotkeyRewind: 'ArrowLeft',
   hotkeyForward: 'ArrowRight',

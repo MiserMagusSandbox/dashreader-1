@@ -1,32 +1,28 @@
-import { Plugin, WorkspaceLeaf, Notice, MarkdownView, Menu, Editor } from 'obsidian';
-import { DashReaderView, VIEW_TYPE_DASHREADER } from './src/rsvp-view';
+import { Plugin, Notice, MarkdownView, Menu, Editor } from 'obsidian';
+import { DashReaderModal } from './src/rsvp-view';
 import { DashReaderSettingTab } from './src/settings';
 import { DashReaderSettings } from './src/types';
 import { validateSettings } from './src/services/settings-validator';
 
 export default class DashReaderPlugin extends Plugin {
+  private currentModal: DashReaderModal | null = null;
+  private skipInitialAutoLoad = false;
   settings: DashReaderSettings;
 
   async onload() {
     await this.loadSettings();
 
-    // Enregistrer la vue
-    this.registerView(
-      VIEW_TYPE_DASHREADER,
-      (leaf) => new DashReaderView(leaf, this.settings)
-    );
-
     // Ajouter l'icône dans la ribbon
-    this.addRibbonIcon('zap', 'Open speed reader', () => {
-      void this.activateView();
+    this.addRibbonIcon('zap', 'Launch speed-reader from curser', () => {
+      void this.openModal();
     });
 
     // Command: Open DashReader
     this.addCommand({
       id: 'open',
-      name: 'Open speed reader',
+      name: 'Launch from curser',
       callback: () => {
-        void this.activateView();
+        void this.openModal();
       }
     });
 
@@ -37,12 +33,10 @@ export default class DashReaderPlugin extends Plugin {
       editorCallback: (editor: Editor) => {
         const selection = editor.getSelection();
         if (selection) {
-          void this.activateView().then(() => {
-            const view = this.getView();
-            if (view) {
-              view.loadText(selection);
-            }
-          });
+          const modal = this.openModal({ skipInitialAutoLoad: true });
+          const fileName = this.app.workspace.getActiveFile()?.name;
+          const lineNumber = editor.getCursor().line + 1;
+          modal.loadText(selection, { fileName, lineNumber });
         } else {
           new Notice('Please select some text first');
         }
@@ -57,25 +51,12 @@ export default class DashReaderPlugin extends Plugin {
         const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
         if (activeView) {
           const content = activeView.editor.getValue();
-          void this.activateView().then(() => {
-            const view = this.getView();
-            if (view) {
-              view.loadText(content);
-            }
-          });
+          const fileName = activeView.file?.name ?? this.app.workspace.getActiveFile()?.name;
+          const modal = this.openModal({ skipInitialAutoLoad: true });
+          modal.loadText(content, { fileName, lineNumber: 1 }); // no cursorPosition
         } else {
           new Notice('No active note found');
         }
-      }
-    });
-
-    // Command: Toggle Play/Pause
-    this.addCommand({
-      id: 'toggle-play-pause',
-      name: 'Toggle play/pause',
-      callback: () => {
-        // This command is handled by the view itself
-        new Notice('Use Shift+Space key when speed reader is active');
       }
     });
 
@@ -89,12 +70,8 @@ export default class DashReaderPlugin extends Plugin {
               .setTitle('Read with speed reader')
               .setIcon('zap')
               .onClick(() => {
-                void this.activateView().then(() => {
-                  const view = this.getView();
-                  if (view) {
-                    view.loadText(selection);
-                  }
-                });
+                const modal = this.openModal({ skipInitialAutoLoad: true });
+                modal.loadText(selection);
               });
           });
         }
@@ -107,62 +84,54 @@ export default class DashReaderPlugin extends Plugin {
     // Mettre à jour la vue quand les paramètres changent
     this.registerEvent(
       this.app.workspace.on('layout-change', () => {
-        const view = this.getView();
-        if (view) {
-          view.updateSettings(this.settings);
+        if (this.currentModal && this.currentModal.isOpen) {
+          this.currentModal.updateSettings(this.settings);
         }
       })
     );
   }
 
   onunload() {
-    // Don't detach leaves here - let Obsidian restore them at original positions during updates
-  }
-
-  private getView(): DashReaderView | null {
-    const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_DASHREADER);
-    if (leaves.length > 0) {
-      return leaves[0].view as unknown as DashReaderView;
+    if (this.currentModal) {
+      this.currentModal.close();
+      this.currentModal = null;
     }
-    return null;
   }
 
   async loadSettings() {
     const rawSettings = await this.loadData() as Partial<DashReaderSettings> | null;
     this.settings = validateSettings(rawSettings);
+
+    // Create data.json immediately on first run so it exists on disk
+    if (!rawSettings) {
+      await this.saveData(this.settings);
+    }
   }
 
   async saveSettings() {
     await this.saveData(this.settings);
     // Mettre à jour la vue si elle existe
-    const view = this.getView();
-    if (view) {
-      view.updateSettings(this.settings);
+    if (this.currentModal && this.currentModal.isOpen) {
+      this.currentModal.updateSettings(this.settings);
     }
   }
 
-  async activateView() {
-    const { workspace } = this.app;
+  private openModal(options?: { skipInitialAutoLoad?: boolean }): DashReaderModal {
+    if (this.currentModal && this.currentModal.isOpen) return this.currentModal;
+    if (this.currentModal) this.currentModal.close();
 
-    let leaf: WorkspaceLeaf | null = null;
-    const leaves = workspace.getLeavesOfType(VIEW_TYPE_DASHREADER);
+    this.currentModal = new DashReaderModal(
+      this.app,
+      this.settings,
+      () => { this.currentModal = null; },
+      () => void this.saveSettings()
+    );
 
-    if (leaves.length > 0) {
-      // Une vue existe déjà, l'utiliser
-      leaf = leaves[0];
-    } else {
-      // Créer une nouvelle vue dans le panneau de droite
-      leaf = workspace.getRightLeaf(false);
-      if (leaf) {
-        await leaf.setViewState({
-          type: VIEW_TYPE_DASHREADER,
-          active: true,
-        });
-      }
+    if (options?.skipInitialAutoLoad) {
+      this.currentModal.requestSkipInitialAutoLoadOnce();
     }
 
-    if (leaf) {
-      void workspace.revealLeaf(leaf);
-    }
+    this.currentModal.open();
+    return this.currentModal;
   }
 }

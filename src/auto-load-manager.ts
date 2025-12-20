@@ -376,6 +376,18 @@ export class AutoLoadManager {
    * });
    * ```
    */
+
+  public syncStateToEditor(): void {
+    const content = extractEditorContent(this.app);
+    if (!content.currentFile) return;
+
+    this.state.lastFilePath = content.currentFile.path;
+    this.state.lastSelection = content.selection ?? '';
+    if (typeof content.cursorPosition === 'number') {
+      this.state.lastCursorPosition = content.cursorPosition;
+    }
+  }
+  
   checkSelectionOrCursor(): void {
     // Throttle checks
     const now = Date.now();
@@ -389,10 +401,12 @@ export class AutoLoadManager {
       return;
     }
 
-    // Case 1: Selection exists
     if (content.selection && content.selection.length > TEXT_LIMITS.minSelectionLength) {
       if (content.selection !== this.state.lastSelection) {
+        this.state.lastFilePath = content.currentFile.path;
         this.state.lastSelection = content.selection;
+        this.state.lastCursorPosition = content.cursorPosition ?? this.state.lastCursorPosition;
+
         this.loadTextCallback(content.selection, {
           fileName: content.fileName,
           lineNumber: content.lineNumber,
@@ -401,15 +415,16 @@ export class AutoLoadManager {
       return;
     }
 
-    // Case 2: No selection - reload from cursor position
     if (content.fullContent && content.fullContent.trim().length > TEXT_LIMITS.minContentLength) {
       if (content.cursorPosition !== this.state.lastCursorPosition) {
+        this.state.lastFilePath = content.currentFile.path;
+        this.state.lastSelection = '';
+        this.state.lastCursorPosition = content.cursorPosition ?? this.state.lastCursorPosition;
+
         this.loadTextCallback(content.fullContent, {
           fileName: content.fileName,
           cursorPosition: content.cursorPosition,
         });
-        this.state.lastSelection = '';
-        this.state.lastCursorPosition = content.cursorPosition!;
       }
     }
   }
@@ -456,6 +471,10 @@ export class AutoLoadManager {
 
       // Priority 1: Load selection if exists
       if (content.selection && content.selection.length > TEXT_LIMITS.minSelectionLength) {
+        this.state.lastFilePath = content.currentFile.path;
+        this.state.lastSelection = content.selection;
+        this.state.lastCursorPosition = content.cursorPosition ?? this.state.lastCursorPosition;
+
         this.loadTextCallback(content.selection, {
           fileName: content.fileName,
           lineNumber: content.lineNumber,
@@ -465,6 +484,10 @@ export class AutoLoadManager {
 
       // Priority 2: Load full content from cursor position
       if (content.fullContent && content.fullContent.trim().length > TEXT_LIMITS.minContentLength) {
+        this.state.lastFilePath = content.currentFile.path;
+        this.state.lastSelection = '';
+        this.state.lastCursorPosition = content.cursorPosition ?? this.state.lastCursorPosition;
+
         this.loadTextCallback(content.fullContent, {
           fileName: content.fileName,
           cursorPosition: content.cursorPosition,

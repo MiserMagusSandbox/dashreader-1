@@ -5,10 +5,16 @@
   flex-direction: column;
   height: 100%;
   width: 100%;
-  background: var(--background-primary);
+  background: var(--dashreader-background-color, var(--background-primary));
   padding: 0;
   box-sizing: border-box;
   position: relative;
+}
+
+/* DashReader modal sizing */
+.dashreader-modal {
+  width: min(1100px, 95vw);
+  max-width: 95vw;
 }
 
 /* ===== TOGGLE BAR (Discrète) ===== */
@@ -45,22 +51,42 @@
 
 /* ===== BREADCRUMB NAVIGATION (Discreet but visible) ===== */
 .dashreader-breadcrumb {
-  display: flex;
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;         /* <-- prevents full-width stretch in column flex */
+  padding-right: 0;               /* <-- don’t artificially extend the bar */
+  gap: 8px;
+
   padding: 8px 20px;
   background: transparent;
   font-size: 13px;
   color: var(--text-muted);
-  overflow-x: auto;
+
+  /* Critical: do NOT allow horizontal scrolling; we want ellipsis */
+  overflow: hidden;
   white-space: nowrap;
-  scrollbar-width: thin;
+
   opacity: 0.5;
   transition: opacity 0.3s ease;
-  align-items: center;
-  gap: 8px;
+  /* Reserve space on the right for your top-right buttons (tune this) */
+  max-width: calc(100% - 36px); /* change 96px to whatever your controls block needs */
 }
 
 .dashreader-breadcrumb:hover {
   opacity: 1;
+}
+
+/* The “shrinkable” area: this is what truncates */
+.dashreader-breadcrumb-path {
+  display: flex;
+  align-items: center;
+
+  min-width: 0;          /* required for ellipsis to work inside flex */
+  overflow: hidden;
+
+  flex: 1 1 auto;
+
+  gap: 0;
 }
 
 .dashreader-breadcrumb-icon {
@@ -70,12 +96,59 @@
   margin-right: 4px;
 }
 
+.dashreader-breadcrumb-dropdown {
+  display: inline-flex;
+  cursor: pointer;
+  margin-left: 8px;
+  padding: 0;
+  line-height: 1;
+  opacity: 0.6;
+  transition: all 0.2s ease;
+  border-radius: 3px;
+
+  justify-content: center;
+  align-items: center;
+
+  width: 30px;
+  height: 30px;
+  line-height: 24px;
+}
+
+.dashreader-breadcrumb-dropdown svg {
+  display: block;
+}
+
+/* Icons must never shrink */
+.dashreader-breadcrumb-icon,
+.dashreader-breadcrumb-dropdown {
+  flex: 0 0 auto;
+}
+
+.dashreader-breadcrumb-dropdown:hover {
+  opacity: 1;
+  background: var(--background-modifier-hover);
+}
+
 .dashreader-breadcrumb-item {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  flex: 0 1 auto;
+  max-width: 14rem;      /* prevents one item swallowing everything */
+
   display: inline-block;
   cursor: pointer;
   transition: color 0.2s ease;
   padding: 2px 4px;
   border-radius: 3px;
+}
+
+/* Prioritise the most recent heading (last item gets remaining space) */
+.dashreader-breadcrumb-item--last {
+  flex: 1 1 auto;    /* last item gets the remaining space */
+  max-width: none;
 }
 
 .dashreader-breadcrumb-item:hover {
@@ -84,111 +157,141 @@
 }
 
 .dashreader-breadcrumb-separator {
-  display: inline-block;
-  user-select: none;
+  flex: 0 0 auto;
   margin: 0 6px;
   opacity: 0.7;
-}
 
-.dashreader-breadcrumb-dropdown {
   display: inline-block;
-  cursor: pointer;
-  margin-left: 8px;
-  padding: 2px 6px;
-  opacity: 0.6;
-  transition: all 0.2s ease;
-  border-radius: 3px;
-}
-
-.dashreader-breadcrumb-dropdown:hover {
-  opacity: 1;
-  background: var(--background-modifier-hover);
-}
-
-/* ===== STATS (Cachées par défaut) ===== */
-.dashreader-stats {
-  padding: 16px 20px;
-  background: var(--background-secondary);
-  border-bottom: 1px solid var(--background-modifier-border);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  animation: slideDown 0.3s ease;
-}
-
-.dashreader-stats.hidden {
-  display: none;
-}
-
-.dashreader-wpm-display {
-  font-size: 18px;
-  font-weight: bold;
-  color: var(--text-accent);
-}
-
-.dashreader-stats-text {
-  font-size: 14px;
-  color: var(--text-muted);
-}
-
-@keyframes slideDown {
-  from {
-    opacity: 0;
-    transform: translateY(-10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  user-select: none;
 }
 
 /* ===== ZONE D'AFFICHAGE PRINCIPALE (Focus total) ===== */
 .dashreader-display {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
   flex: 1;
-  gap: 30px;
-  padding: 60px 40px;
   min-height: 400px;
+  padding: 20px 20px;
+
+  /* NEW: grid keeps the word row stationary */
+  display: flex;
+  grid-template-rows: 1fr auto 1fr;
+  row-gap: 24px;
+
+  /* center horizontally, but do NOT vertical-center the whole stack */
+  justify-items: center;
+  align-items: stretch;
+
+  /* important for overflow + preventing grid rows from expanding */
+  min-height: 0;
+  width: 100%;
+
+  height: 100%;
+  justify-content: center;
+  flex-direction: column;
+  gap: 30px;
 }
 
 /* Contexte */
 .dashreader-context-before,
 .dashreader-context-after {
   display: block;
-  font-size: 16px;
+  font-size: 14px;
   color: var(--text-muted);
-  opacity: 0.5;
-  text-align: center;
-  max-width: 70%;
+  text-align: left;
+  align-self: start;
+  justify-self: start;
+  margin-left: 0.5%;
+  margin-right: 0.5%;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-height: 100%;
   line-height: 1.6;
   transition: opacity 0.2s ease;
+  white-space: pre-wrap;
+  overflow: hidden;
 }
 
-.dashreader-context-before:hover,
-.dashreader-context-after:hover {
-  opacity: 0.7;
+/* Context brightness when paused vs running (based on scrollable class) */
+.dashreader-context-before.dashreader-context-scrollable-off,
+.dashreader-context-after.dashreader-context-scrollable-off {
+  opacity: 0.1;
+}
+
+.dashreader-context-before.dashreader-context-scrollable-on,
+.dashreader-context-after.dashreader-context-scrollable-on {
+  opacity: 1;
+}
+
+/* While playing, allow hover to “peek” at context */
+.dashreader-context-before.dashreader-context-scrollable-off:hover,
+.dashreader-context-after.dashreader-context-scrollable-off:hover {
+  opacity: 0.6;
+}
+
+.dashreader-mobile-controls-wrap {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dashreader-progress-info {
+  font-size: 12px;
+  opacity: 0.8;
+  white-space: nowrap;
+}
+
+.dashreader-progress-info-left {
+  grid-column: 1;
+  justify-self: start;
+}
+
+.dashreader-progress-info-right {
+  grid-column: 3;
+  justify-self: end;
+}
+
+.dashreader-mobile-controls-wrap .dashreader-mobile-controls-row {
+  flex: 1 1 auto;
 }
 
 /* Mot principal - MAXIMUM FOCUS */
 .dashreader-word {
-  font-size: 48px;
+  min-width: 200px;
+
   font-weight: 500;
   text-align: center;
-  color: var(--text-normal);
+  color: var(--dashreader-font-color, var(--text-normal));
+  max-height: 100px;
   min-height: 100px;
-  min-width: 300px;
-  display: flex;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+  white-space: nowrap;
   align-items: center;
   justify-content: center;
-  padding: 30px 50px;
+  padding: 12px 12px;
   background: transparent;
   border-radius: 0;
   transition: transform 0.05s ease;
   user-select: none;
   letter-spacing: 0.02em;
+  position: relative;
+  align-self: center;
+  line-height: 1.35; /* fix baseline movement */
+  --dashreader-focus-band-height: 1.8em;  /* fixed band */
+  --dashreader-focus-dash-block: 16px;    /* size of the top/bottom dash blocks */
+}
+
+.dashreader-word-content {
+  position: relative;
+  align-self: center;
+  z-index: 1;
+  width: 100%;
 }
 
 /* Message de bienvenue géré via JS */
@@ -197,198 +300,104 @@
 }
 
 .dashreader-highlight {
-  font-weight: bold;
+  font-weight: 700;
+  color: var(--dashreader-highlight-color, var(--text-accent));
   text-decoration: underline;
   text-decoration-thickness: 3px;
   text-underline-offset: 5px;
-  animation: pulse 0.15s ease-in-out;
-  filter: brightness(1.2);
 }
 
-@keyframes pulse {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.05); }
-}
-
-/* ===== BARRE DE PROGRESSION (Discrète) ===== */
+/* Make the progress bar reach the full width of whatever it sits inside */
 .dashreader-progress-container {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 3px;
-  background: var(--background-modifier-border);
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.dashreader-progress-container > progress.metadata-progress.rsvp-progress-bar {
+  width: 100%;
+  height: 8px;            /* adjust to match Bases */
+  border-radius: 999px;
   overflow: hidden;
+  accent-color: var(--dashreader-highlight-color, var(--interactive-accent));
+}
+
+/* Chromium/Obsidian */
+.dashreader-progress-container > progress.metadata-progress.rsvp-progress-bar::-webkit-progress-bar {
+  background: var(--background-modifier-border);
+}
+.dashreader-progress-container > progress.metadata-progress.rsvp-progress-bar::-webkit-progress-value {
+  background: var(--dashreader-highlight-color, var(--interactive-accent));
+}
+
+/* Firefox fallback */
+.dashreader-progress-container > progress.metadata-progress.rsvp-progress-bar::-moz-progress-bar {
+  background: var(--dashreader-highlight-color, var(--interactive-accent));
+}
+
+.dashreader-bottom-bar {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0 6px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dashreader-mobile-controls {
+  width: 100%;
+}
+
+.dashreader-mobile-controls-wrap {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  column-gap: 10px;
+}
+
+.dashreader-mobile-controls-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  grid-column: 2;
+  justify-self: center;
+}
+
+.dashreader-modal-container .modal-bg {
+  background-color: color-mix(in srgb, var(--background-secondary) 50%, transparent);
+  backdrop-filter: blur(6px);
+  opacity: 0.99 !important;
+} 
+
+/* If the plugin’s inner bar is a child element, force that to full width too */
+.dashreader-progress-container > *{
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .dashreader-progress-bar {
   height: 100%;
-  background: var(--interactive-accent);
+  background: var(--dashreader-highlight-color, var(--interactive-accent));
   transition: width 0.1s linear;
-  box-shadow: 0 0 8px currentColor;
-}
-
-/* ===== MINIMAP VERTICALE (Compact and usable) ===== */
-.dashreader-minimap {
-  display: block;
-  position: fixed;
-  right: 10px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 40px;
-  height: 70%;
-  max-height: 600px;
-  opacity: 0.4;
-  transition: opacity 0.3s ease;
-  z-index: 90;
-  pointer-events: auto;
-  background: var(--background-secondary);
-  border-radius: 20px;
-  border: 1px solid var(--background-modifier-border);
-  overflow: visible;
-}
-
-.dashreader-minimap:hover {
-  opacity: 0.8;
-}
-
-/* Background track */
-.dashreader-minimap-line {
-  position: absolute;
-  left: 50%;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  background: var(--background-modifier-border);
-  opacity: 0.6;
-  transform: translateX(-50%);
-}
-
-/* Progress indicator (fills from top to current position) */
-.dashreader-minimap-progress {
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 100%;
-  height: 0%;
-  background: linear-gradient(180deg,
-    var(--interactive-accent) 0%,
-    var(--interactive-accent-hover) 100%);
-  opacity: 0.2;
-  transition: height 0.3s ease;
-  pointer-events: none;
-}
-
-/* Heading points on the minimap - LARGER & EASIER TO CLICK */
-.dashreader-minimap-point {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%) translateY(-50%);
-  border-radius: 50%;
-  background: var(--text-muted);
-  cursor: pointer;
-  transition: all 0.2s ease;
-  pointer-events: auto;
-  opacity: 0.8;
-}
-
-/* Create invisible extended click zone around each point */
-.dashreader-minimap-point::after {
-  content: '';
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 40px;
-  height: 30px;
-  cursor: pointer;
-  /* Debug: uncomment to see hit zone */
-  /* background: rgba(255, 0, 0, 0.1); */
-}
-
-/* Size based on heading level - LARGER */
-.dashreader-minimap-point[data-level="1"] {
-  width: 12px;
-  height: 12px;
-}
-
-.dashreader-minimap-point[data-level="2"] {
-  width: 10px;
-  height: 10px;
-}
-
-.dashreader-minimap-point[data-level="3"],
-.dashreader-minimap-point[data-level="4"],
-.dashreader-minimap-point[data-level="5"],
-.dashreader-minimap-point[data-level="6"] {
-  width: 8px;
-  height: 8px;
-}
-
-/* Hover effect on points - MORE VISIBLE */
-.dashreader-minimap-point:hover {
-  transform: translateX(-50%) translateY(-50%) scale(1.8);
-  opacity: 1;
-  background: var(--interactive-accent);
-  box-shadow: 0 0 12px var(--interactive-accent);
-  z-index: 10;
-}
-
-/* Current position indicator */
-.dashreader-minimap-point-current {
-  opacity: 1;
-  background: var(--interactive-accent);
-  box-shadow: 0 0 8px var(--interactive-accent);
-  animation: minimap-pulse 2s ease-in-out infinite;
-}
-
-@keyframes minimap-pulse {
-  0%, 100% {
-    box-shadow: 0 0 8px var(--interactive-accent);
-  }
-  50% {
-    box-shadow: 0 0 12px var(--interactive-accent);
-  }
-}
-
-/* Minimap tooltip (slides from right) */
-.dashreader-minimap-tooltip {
-  position: fixed;
-  right: -300px;
-  padding: 8px 12px;
-  background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 4px;
-  font-size: 13px;
-  color: var(--text-normal);
-  white-space: nowrap;
-  pointer-events: none;
-  z-index: 95;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-  transition: right 0.2s ease-out, opacity 0.2s ease-out;
-  opacity: 0;
-  max-width: 280px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.dashreader-minimap-tooltip.visible {
-  right: 60px;
-  opacity: 1;
 }
 
 /* ===== CONTRÔLES (Cachés par défaut) ===== */
 .dashreader-controls {
-  position: absolute;
   bottom: 20px;
+  padding: 16px 24px;
+  gap: 12px;
+
+  position: absolute;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
   justify-content: center;
   align-items: center;
-  padding: 16px 24px;
   background: var(--background-secondary);
   border: 1px solid var(--background-modifier-border);
   border-radius: 12px;
@@ -493,6 +502,18 @@
   z-index: 50;
   animation: slideUp 0.3s ease;
   max-width: 90%;
+
+  touch-action: pan-y;
+  box-sizing: border-box;
+
+  /* critical: keep it inside the available height */
+  max-height: calc(100% - 90px);
+
+  /* critical: if content exceeds max-height, scroll inside the controls box */
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 
 .dashreader-settings.hidden {
@@ -522,40 +543,58 @@
   cursor: pointer;
 }
 
-/* ===== THÈMES ===== */
-.theme-dark .dashreader-word {
-  text-shadow: 0 0 20px rgba(255, 255, 255, 0.1);
-}
-
-.theme-dark .dashreader-highlight {
-  text-shadow: 0 0 8px currentColor;
-}
-
-.theme-light .dashreader-word {
-  text-shadow: 0 0 20px rgba(0, 0, 0, 0.05);
-}
-
-.theme-light .dashreader-highlight {
-  color: #0066cc;
-}
-
 /* ===== RESPONSIVE ===== */
 @media (max-width: 768px) {
   .dashreader-display {
-    padding: 40px 20px;
+    flex: 1;
+    min-height: 400px;
+    padding: 20px 20px;
+
+    /* NEW: grid keeps the word row stationary */
+    display: flex;
+    grid-template-rows: 1fr auto 1fr;
+    row-gap: 24px;
+
+    /* center horizontally, but do NOT vertical-center the whole stack */
+    justify-items: center;
+    align-items: stretch;
+
+    /* important for overflow + preventing grid rows from expanding */
+    min-height: 0;
+    width: 100%;
+
+    height: 100%;
+    justify-content: center;
+    flex-direction: column;
+    gap: 30px;
   }
 
   .dashreader-word {
-    font-size: 32px;
-    min-height: 70px;
-    padding: 20px 30px;
     min-width: 200px;
-  }
-
-  .dashreader-context-before,
-  .dashreader-context-after {
-    font-size: 14px;
-    max-width: 85%;
+    
+    font-weight: 500;
+    text-align: center;
+    color: var(--dashreader-font-color, var(--text-normal));
+    max-height: 100px;
+    min-height: 100px;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
+    white-space: nowrap;
+    align-items: center;
+    justify-content: center;
+    padding: 12px 12px;
+    background: transparent;
+    border-radius: 0;
+    transition: transform 0.05s ease;
+    user-select: none;
+    letter-spacing: 0.02em;
+    position: relative;
+    align-self: center;
+    line-height: 1.35;
+    --dashreader-focus-band-height: 1.8em;
+    --dashreader-focus-dash-block: 16px;
   }
 
   .dashreader-controls {
@@ -564,8 +603,21 @@
     gap: 8px;
   }
 
+  /* Optional but recommended if settings can also get tall */
   .dashreader-settings {
     bottom: 70px;
+
+    touch-action: pan-y;
+    box-sizing: border-box;
+
+    /* critical: keep it inside the available height */
+    max-height: calc(100% - 70px);
+
+    /* critical: if content exceeds max-height, scroll inside the controls box */
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
   }
 
   .dashreader-btn {
@@ -577,6 +629,52 @@
   .dashreader-setting-group {
     flex-direction: column;
     gap: 4px;
+  }
+
+  .dashreader-mobile-controls-wrap {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto auto;
+    row-gap: 8px;
+    column-gap: 10px;
+    align-items: center;
+  }
+
+  .dashreader-progress-info-left {
+    grid-column: 1;
+    grid-row: 1;
+    justify-self: start;
+  }
+
+  .dashreader-progress-info-right {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+
+  .dashreader-mobile-controls-row {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-content: center;
+
+    flex-wrap: nowrap;          /* keep buttons in one row */
+    overflow-x: auto;           /* if too many buttons, scroll instead of wrapping */
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .dashreader-mobile-controls-row::-webkit-scrollbar {
+    height: 0;
+  }
+
+  .dashreader-bottom-bar {
+    gap: 0px;
+  }
+
+  .dashreader-outline-menu {
+    min-width: 0;
+    width: calc(100vw - 20px);
+    max-width: calc(100vw - 20px);
+    max-height: calc(100vh - 20px);
   }
 }
 
@@ -597,12 +695,12 @@
 /* ===== FOCUS ET ACCESSIBILITÉ ===== */
 .dashreader-btn:focus-visible,
 .dashreader-toggle-btn:focus-visible {
-  outline: 2px solid var(--interactive-accent);
+  outline: 2px solid var(--dashreader-highlight-color, var(--interactive-accent));
   outline-offset: 2px;
 }
 
 /* Masquer les éléments .hidden */
-.hidden {
+.dashreader-container .hidden {
   display: none !important;
 }
 
@@ -621,7 +719,7 @@
 }
 
 .dashreader-container::-webkit-scrollbar-thumb:hover {
-  background: var(--interactive-accent);
+  background: var(--dashreader-highlight-color, var(--interactive-accent));
 }
 
 /* ===== MESSAGES (WELCOME & READY) ===== */
@@ -650,6 +748,8 @@
   font-size: 14px;
   opacity: 0.6;
   margin-bottom: 8px;
+  margin-top: 8px;
+
 }
 
 .dashreader-ready-duration {
@@ -662,20 +762,7 @@
 }
 
 /* ===== MENUS DROPDOWN ===== */
-.dashreader-menu {
-  position: fixed;
-  z-index: 10000;
-  background-color: var(--background-primary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 4px;
-  padding: 8px;
-  max-height: 400px;
-  overflow-y: auto;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-  min-width: 300px;
-  max-width: 500px;
-}
-
+.dashreader-menu,
 .dashreader-outline-menu {
   position: fixed;
   z-index: 10000;
@@ -701,29 +788,7 @@
 }
 
 /* Menu items */
-.dashreader-menu-item {
-  padding: 4px 8px;
-  cursor: pointer;
-  border-radius: 3px;
-  font-size: 13px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  transition: background-color 0.1s ease;
-}
-
-.dashreader-menu-item:hover {
-  background-color: var(--background-modifier-hover);
-}
-
-.dashreader-menu-item-current {
-  background-color: var(--background-modifier-hover);
-  font-weight: bold;
-  border-left: 3px solid var(--interactive-accent);
-  padding-left: 5px;
-}
-
-/* Outline specific styles */
+.dashreader-menu-item,
 .dashreader-outline-item {
   padding: 4px 8px;
   cursor: pointer;
@@ -735,8 +800,16 @@
   transition: background-color 0.1s ease;
 }
 
+.dashreader-menu-item:hover,
 .dashreader-outline-item:hover {
   background-color: var(--background-modifier-hover);
+}
+
+.dashreader-menu-item-current {
+  background-color: var(--background-modifier-hover);
+  font-weight: bold;
+  border-left: 3px solid var(--dashreader-highlight-color, var(--interactive-accent));
+  padding-left: 5px;
 }
 
 .dashreader-outline-level {
@@ -776,10 +849,6 @@
   margin: 0 auto 20px auto;
 }
 
-.dashreader-word-with-heading {
-  transition: font-size 0.3s ease;
-}
-
 /* Callout icon styling */
 .dashreader-callout-icon {
   margin-right: 8px;
@@ -802,3 +871,123 @@
   margin-left: 4px;
   opacity: 0.7;
 }
+
+/* ===== ORP / Focus (single source of truth) ===== */
+/* Permanent overlay (doesn't get removed when content clears) */
+.dashreader-focus-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  max-height: 100px;
+}
+
+/* ORP anchoring internals */
+.dashreader-orp-viewport {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  position: relative;
+
+  /* IMPORTANT: keeps the word centered BEFORE we shift it */
+  display: flex;
+  justify-content: center;
+  -webkit-mask-image: linear-gradient(to right, #000 0%, #000 85%, transparent 100%);
+  mask-image: linear-gradient(to right, #000 0%, #000 85%, transparent 100%);
+}
+
+.dashreader-focus-word {
+  display: inline-flex;
+  align-items: baseline;
+}
+
+.dashreader-orp-line {
+  display: inline-flex;
+  align-items: baseline;
+  transform: translateX(0);
+  will-change: transform;
+}
+
+/* Reedy-style focus bars (constant thickness; doesn't scale with font size) */
+.dashreader-focus-lines {
+  box-sizing: border-box;
+  position: absolute;
+  inset: 0;
+  border-top: 3px solid var(--dashreader-highlight-color, var(--interactive-accent));
+  border-bottom: 3px solid var(--dashreader-highlight-color, var(--interactive-accent));
+  opacity: 1;
+}
+
+.dashreader-focus-dashes {
+  box-sizing: border-box;
+  position: absolute;
+  left: var(--dashreader-focus-left, 48%);
+  top: 0;
+  height: 100%;
+  width: 3px;
+  transform: translateX(-50%);
+  opacity: 1;
+}
+
+/* vertical guide 
+.dashreader-focus-dashes::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 12px;
+  bottom: 12px;
+  width: 1px;
+  transform: translateX(-50%);
+  background: var(--background-modifier-border);
+  opacity: 0.35;
+} */
+
+/* top/bottom dashes */
+.dashreader-focus-dashes::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-top: 16px solid var(--dashreader-highlight-color, var(--interactive-accent));
+  border-bottom: 16px solid var(--dashreader-highlight-color, var(--interactive-accent));
+}
+
+.dashreader-inline-context {
+  opacity: 0.35;
+  font-weight: 400;
+}
+
+.dashreader-word:not([data-running="true"]) .dashreader-focus-lines,
+.dashreader-word:not([data-running="true"]) .dashreader-focus-dashes {
+  visibility: hidden;
+}
+
+/* 1) Restore centering on the container */
+.dashreader-word {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 2) Stop baseline forcing big/small text to different vertical positions */
+.dashreader-orp-viewport { align-items: center; } /* add */
+.dashreader-focus-word,
+.dashreader-orp-line {
+  align-items: center; /* change from baseline */
+}
+
+.dashreader-word { --dashreader-focus-band: 96px; }
+
+.dashreader-focus-lines {
+  inset: auto 0;
+  top: 50%;
+  height: var(--dashreader-focus-band);
+  transform: translateY(-50%);
+}
+
+.dashreader-focus-dashes {
+  top: 50%;
+  height: var(--dashreader-focus-band);
+  transform: translate(-50%, -50%);
+}
+

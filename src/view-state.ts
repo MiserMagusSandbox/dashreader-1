@@ -27,7 +27,7 @@
  *
  * **State Categories**:
  * 1. **Reading State**: wordsRead, startTime (track progress)
- * 2. **UI Visibility**: showingControls, showingSettings, showingStats
+ * 2. **UI Visibility**: showingControls, showingSettings
  * 3. **Current Values**: currentWpm, currentChunkSize, currentFontSize (runtime changes)
  * 4. **Loading State**: isLoading, loadedFileName, loadedLineNumber
  *
@@ -105,9 +105,6 @@ export interface ViewStateData {
   /** Whether settings panel is visible */
   showingSettings: boolean;
 
-  /** Whether statistics panel is visible */
-  showingStats: boolean;
-
   // ──────────────────────────────────────────────────────────────────────────
   // Current Values (Runtime)
   // ──────────────────────────────────────────────────────────────────────────
@@ -145,7 +142,6 @@ export const DEFAULT_VIEW_STATE: ViewStateData = {
   startTime: 0,
   showingControls: false,
   showingSettings: false,
-  showingStats: false,
   currentWpm: 0,
   currentChunkSize: 0,
   currentFontSize: 0,
@@ -370,7 +366,7 @@ export class ViewState {
    * Convenience method for toggling boolean properties. Flips the value
    * from true to false or false to true.
    *
-   * @param key - Boolean property to toggle (showingControls, showingSettings, showingStats, isLoading)
+   * @param key - Boolean property to toggle (showingControls, showingSettings, isLoading)
    *
    * @example
    * ```typescript
@@ -381,7 +377,7 @@ export class ViewState {
    * state.toggle('showingSettings');
    * ```
    */
-  toggle<K extends 'showingControls' | 'showingSettings' | 'showingStats' | 'isLoading'>(key: K): void {
+  toggle<K extends 'showingControls' | 'showingSettings' | 'isLoading'>(key: K): void {
     const currentValue = this.get(key) as boolean;
     this.set(key, !currentValue);
   }

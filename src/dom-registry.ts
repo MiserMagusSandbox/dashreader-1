@@ -80,21 +80,19 @@ import { CSS_CLASSES } from './constants';
 export type DOMElementKey =
   | 'wpmValue'          // WPM value display in controls
   | 'wpmInlineValue'    // WPM value in inline settings
-  | 'wpmDisplay'        // WPM display in stats panel
   | 'chunkValue'        // Chunk size value display
   | 'fontValue'         // Font size value display
   | 'accelDurationValue' // Acceleration duration value
   | 'accelTargetValue'  // Acceleration target WPM value
-  | 'statsText'         // Statistics text element
   | 'progressBar'       // Reading progress bar
   | 'wordEl'            // Main word display element
   | 'contextBeforeEl'   // Context before current word
   | 'contextAfterEl'    // Context after current word
+  | 'contextLinesValue' // NEW: inline “Context lines” value
   | 'playBtn'           // Play button
   | 'pauseBtn'          // Pause button
   | 'controlsEl'        // Controls panel container
   | 'settingsEl'        // Settings panel container
-  | 'statsEl';          // Stats panel container
 
 // ============================================================================
 // 2. DOMREGISTRY CLASS

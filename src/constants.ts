@@ -100,11 +100,6 @@ export const CSS_CLASSES = {
   settingLabel: 'setting-label',
   settingToggle: 'setting-toggle',
 
-  // Stats
-  stats: 'dashreader-stats',
-  statsText: 'dashreader-stats-text',
-  wpmDisplay: 'dashreader-wpm-display',
-
   // Buttons
   btn: 'dashreader-btn',
   playBtn: 'play-btn',
@@ -186,6 +181,8 @@ export const INCREMENTS = {
   fontSize: 4,
   /** Acceleration duration increment in seconds */
   accelDuration: 5,
+  contextLines: 1,
+  contextFontSize: 1,
 } as const;
 
 // ============================================================================
@@ -208,6 +205,8 @@ export const LIMITS = {
   wpm: { min: 50, max: 5000 },
   /** Acceleration duration in seconds (10 = quick ramp, 120 = gradual) */
   accelDuration: { min: 10, max: 120 },
+  contextLines: { min: 0, max: 10 },
+  contextFontSize: { min: 10, max: 32 },
 } as const;
 
 // ============================================================================
@@ -223,32 +222,18 @@ export const LIMITS = {
  * - Consistent cross-platform appearance
  */
 export const ICONS = {
-  /** Rewind to start button */
-  rewind: '⏮',
-  /** Play button */
-  play: '▶',
-  /** Pause button */
-  pause: '⏸',
-  /** Skip forward button */
-  forward: '⏭',
-  /** Stop button */
-  stop: '⏹',
-  /** Increment (+) button */
-  increment: '+',
-  /** Decrement (−) button (using minus sign, not hyphen) */
-  decrement: '−',
-  /** Settings toggle button */
-  settings: '⚙️',
-  /** Statistics toggle button */
-  stats: '📊',
-  /** File/document indicator */
-  file: '📄',
-  /** Celebration (reading complete) */
-  celebration: '🎉',
-  /** Book/reading indicator */
-  book: '📖',
-  /** Expand to new tab */
-  expand: '⤢',
+  rewind: 'lucide:skip-back',
+  play: 'lucide:play',
+  pause: 'lucide:pause',
+  forward: 'lucide:skip-forward',
+  stop: 'lucide:square',
+  increment: 'lucide:plus',
+  decrement: 'lucide:minus',
+  settings: 'lucide:settings',
+  file: 'lucide:file-text',
+  celebration: 'lucide:sparkles',
+  book: 'lucide:book-open',
+  expand: 'lucide:maximize-2',
 } as const;
 
 // ============================================================================

@@ -26,6 +26,13 @@ export interface MenuOptions {
   showLevel?: boolean;
   indentByLevel?: boolean;
   timeoutManager: TimeoutManager;
+  onClose?: (reason: 'select' | 'dismiss') => void;
+}
+
+export type MenuHandle = {
+  el: HTMLElement;
+  close: (reason?: 'select' | 'dismiss') => void;
+  isOpen: () => boolean;
 }
 
 export class MenuBuilder {
@@ -35,7 +42,7 @@ export class MenuBuilder {
    * @param options - Menu configuration
    * @returns The created menu element
    */
-  static createMenu(options: MenuOptions): HTMLElement {
+  static createMenu(options: MenuOptions): MenuHandle {
     const {
       anchorEl,
       cssClass,
@@ -50,22 +57,24 @@ export class MenuBuilder {
     // Create menu in document body for proper positioning
     const menu = document.body.createDiv({ cls: cssClass });
 
-    // Position menu near anchor element
-    const anchorRect = anchorEl.getBoundingClientRect();
-    menu.style.top = `${anchorRect.bottom + 5}px`;
+    menu.style.visibility = 'hidden';
 
-    // Calculate horizontal position (center or left-aligned)
-    if (cssClass.includes('heading-menu')) {
-      // Heading menu: center horizontally
-      const menuWidth = 300;
-      const centerLeft = anchorRect.left + (anchorRect.width - menuWidth) / 2;
-      const viewportWidth = window.innerWidth;
-      const finalLeft = Math.max(10, Math.min(centerLeft, viewportWidth - menuWidth - 10));
-      menu.style.left = `${finalLeft}px`;
-    } else {
-      // Outline menu: left-aligned with anchor
-      menu.style.left = `${anchorRect.left}px`;
+    try {
+      menu.style.fontFamily = getComputedStyle(anchorEl).fontFamily;
+    } catch {
+      // ignore
     }
+
+    let closed = false;
+
+    const cleanup = (reason: 'select' | 'dismiss') => {
+      if (closed) return;
+      closed = true;
+
+      menu.remove();
+      document.removeEventListener('pointerdown', closeMenuOnPointerDown, true);
+      options.onClose?.(reason);
+    };
 
     // Add title if provided
     if (title) {
@@ -112,24 +121,91 @@ export class MenuBuilder {
       // Click handler
       menuItem.addEventListener('click', () => {
         onItemClick(item.wordIndex);
-        menu.remove();
+        cleanup('select');
       });
     });
 
-    // Close menu when clicking outside
-    const closeMenu = (e: MouseEvent) => {
-      if (!menu.contains(e.target as Node)) {
-        menu.remove();
-        document.removeEventListener('click', closeMenu);
+    // Position AFTER content exists (so we can measure). Mobile outline = centered.
+    const positionMenu = () => {
+      const anchorRect = anchorEl.getBoundingClientRect();
+
+      const isMobile = window.matchMedia('(max-width: 768px)').matches;
+      const isOutlineMenu = cssClass.includes('dashreader-outline-menu');
+      const isHeadingMenu = cssClass.includes('heading-menu');
+
+      // Default behavior (desktop / non-outline): keep what you already had
+      let top = anchorRect.bottom + 5;
+      let left = anchorRect.left;
+
+      if (isHeadingMenu) {
+        // Preserve your existing heading-menu centering behavior (fixed 300)
+        const menuWidth = 300;
+        const centerLeft = anchorRect.left + (anchorRect.width - menuWidth) / 2;
+        const viewportWidth = window.innerWidth;
+        const finalLeft = Math.max(10, Math.min(centerLeft, viewportWidth - menuWidth - 10));
+        left = finalLeft;
       }
+
+      if (isMobile && isOutlineMenu) {
+        const menuRect = menu.getBoundingClientRect();
+        const viewportW = window.innerWidth;
+        const viewportH = window.innerHeight;
+        const margin = 10;
+
+        // X: keep it under the chevron but centered on the chevron, then clamp into viewport
+        left = anchorRect.left + (anchorRect.width - menuRect.width) / 2;
+        left = Math.max(margin, Math.min(left, viewportW - menuRect.width - margin));
+
+        // Y: prefer directly under chevron; if it would overflow, try above; otherwise clamp
+        const belowTop = anchorRect.bottom + 5;
+        const aboveTop = anchorRect.top - menuRect.height - 5;
+
+        top = belowTop;
+
+        if (belowTop + menuRect.height > viewportH - margin) {
+          if (aboveTop >= margin) {
+            top = aboveTop; // flip above chevron
+          } else {
+            top = Math.max(margin, viewportH - menuRect.height - margin); // last-resort clamp
+          }
+        }
+      }
+
+      menu.style.left = `${left}px`;
+      menu.style.top = `${top}px`;
+      menu.style.visibility = '';
     };
 
-    // Delay adding the listener to avoid immediate close from the current click
+    requestAnimationFrame(positionMenu);
+
+
+    // Close menu when clicking/tapping outside.
+    // Use pointerdown + capture so the dismiss gesture does NOT reach the reader surface (prevents accidental play/pause).
+    const closeMenuOnPointerDown = (e: PointerEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+
+      if (menu.contains(target)) return;
+
+      // Eat the gesture so it doesn't toggle play/pause underneath,
+      // and doesn't trigger the breadcrumb button click after dismiss.
+      e.preventDefault();
+      e.stopPropagation();
+      (e as any).stopImmediatePropagation?.();
+
+      cleanup('dismiss');
+    };
+
+    // Delay adding the listener to avoid immediate dismiss from the opening click
     timeoutManager.setTimeout(() => {
-      document.addEventListener('click', closeMenu);
+      document.addEventListener('pointerdown', closeMenuOnPointerDown, true);
     }, 10);
 
-    return menu;
+    return {
+      el: menu,
+      close: (reason: 'select' | 'dismiss' = 'dismiss') => cleanup(reason),
+      isOpen: () => !closed
+    };
   }
 
   /**

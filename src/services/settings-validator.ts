@@ -32,11 +32,14 @@ const LIMITS = {
   wpm: { min: 50, max: 5000 },
   chunkSize: { min: 1, max: 10 },
   fontSize: { min: 12, max: 120 },
-  contextWords: { min: 0, max: 20 },
   autoStartDelay: { min: 0, max: 60 },
   accelerationDuration: { min: 1, max: 300 },
   accelerationTargetWpm: { min: 50, max: 5000 },
-  micropauseMultiplier: { min: 1.0, max: 10.0 }
+  micropauseMultiplier: { min: 1.0, max: 10.0 },
+  contextLines: { min: 0, max: 10 },
+  contextFontSize: { min: 10, max: 32 },
+  // minimum font size for shrinking long single tokens
+  minTokenFontSize: { min: 8, max: 120 }
 } as const;
 
 /**
@@ -52,10 +55,12 @@ function clamp(value: number, min: number, max: number): number {
  */
 function validateColor(color: unknown, defaultColor: string): string {
   if (typeof color !== 'string') return defaultColor;
+  const c = color.trim();
+  if (c === '' || c.toLowerCase() === 'theme') return '';
 
   // Match #RGB or #RRGGBB format
-  if (/^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/.test(color)) {
-    return color;
+  if (/^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/.test(c)) {
+    return c;
   }
 
   return defaultColor;
@@ -131,12 +136,6 @@ export function validateSettings(partial: Partial<DashReaderSettings> | null | u
       LIMITS.fontSize.min,
       LIMITS.fontSize.max
     ),
-    contextWords: validateNumber(
-      partial.contextWords,
-      DEFAULT_SETTINGS.contextWords,
-      LIMITS.contextWords.min,
-      LIMITS.contextWords.max
-    ),
     autoStartDelay: validateNumber(
       partial.autoStartDelay,
       DEFAULT_SETTINGS.autoStartDelay,
@@ -205,6 +204,54 @@ export function validateSettings(partial: Partial<DashReaderSettings> | null | u
       LIMITS.micropauseMultiplier.min,
       LIMITS.micropauseMultiplier.max
     ),
+    mobileFontSize: validateNumber(
+      partial.mobileFontSize,
+      DEFAULT_SETTINGS.mobileFontSize,
+      LIMITS.fontSize.min,
+      LIMITS.fontSize.max
+    ),
+    minTokenFontSize: validateNumber(
+      partial.minTokenFontSize,
+      DEFAULT_SETTINGS.minTokenFontSize,
+      LIMITS.minTokenFontSize.min,
+      LIMITS.minTokenFontSize.max
+    ),
+    mobileWpm: validateNumber(
+      partial.mobileWpm,
+      DEFAULT_SETTINGS.mobileWpm,
+      LIMITS.wpm.min,
+      LIMITS.wpm.max
+    ),
+    mobileChunkSize: validateNumber(
+      partial.mobileChunkSize,
+      DEFAULT_SETTINGS.mobileChunkSize,
+      LIMITS.chunkSize.min,
+      LIMITS.chunkSize.max
+    ),
+    contextLines: validateNumber(
+      (partial as any).contextLines,
+      DEFAULT_SETTINGS.contextLines,
+      LIMITS.contextLines.min,
+      LIMITS.contextLines.max
+    ),
+    mobileContextLines: validateNumber(
+      (partial as any).mobileContextLines,
+      DEFAULT_SETTINGS.mobileContextLines,
+      LIMITS.contextLines.min,
+      LIMITS.contextLines.max
+    ),
+    contextFontSize: validateNumber(
+      (partial as any).contextFontSize,
+      DEFAULT_SETTINGS.contextFontSize,
+      LIMITS.contextFontSize.min,
+      LIMITS.contextFontSize.max
+    ),
+    mobileContextFontSize: validateNumber(
+      (partial as any).mobileContextFontSize,
+      DEFAULT_SETTINGS.mobileContextFontSize,
+      LIMITS.contextFontSize.min,
+      LIMITS.contextFontSize.max
+    ),
 
     // Color settings
     highlightColor: validateColor(partial.highlightColor, DEFAULT_SETTINGS.highlightColor),
@@ -222,13 +269,15 @@ export function validateSettings(partial: Partial<DashReaderSettings> | null | u
 
     // Boolean settings
     showContext: validateBoolean(partial.showContext, DEFAULT_SETTINGS.showContext),
-    showMinimap: validateBoolean(partial.showMinimap, DEFAULT_SETTINGS.showMinimap),
     showBreadcrumb: validateBoolean(partial.showBreadcrumb, DEFAULT_SETTINGS.showBreadcrumb),
     enableMicropause: validateBoolean(partial.enableMicropause, DEFAULT_SETTINGS.enableMicropause),
     autoStart: validateBoolean(partial.autoStart, DEFAULT_SETTINGS.autoStart),
     showProgress: validateBoolean(partial.showProgress, DEFAULT_SETTINGS.showProgress),
-    showStats: validateBoolean(partial.showStats, DEFAULT_SETTINGS.showStats),
     enableSlowStart: validateBoolean(partial.enableSlowStart, DEFAULT_SETTINGS.enableSlowStart),
     enableAcceleration: validateBoolean(partial.enableAcceleration, DEFAULT_SETTINGS.enableAcceleration),
+    mobileShowContext: validateBoolean(partial.mobileShowContext, DEFAULT_SETTINGS.mobileShowContext),
+    mobileShowBreadcrumb: validateBoolean(partial.mobileShowBreadcrumb, DEFAULT_SETTINGS.mobileShowBreadcrumb),
+    mobileEnableSlowStart: validateBoolean(partial.mobileEnableSlowStart, DEFAULT_SETTINGS.mobileEnableSlowStart),
+    mobileEnableMicropause: validateBoolean(partial.mobileEnableMicropause, DEFAULT_SETTINGS.mobileEnableMicropause),
   };
 }

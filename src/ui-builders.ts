@@ -46,6 +46,7 @@
 // ============================================================================
 
 import { CSS_CLASSES, ICONS } from './constants';
+import { setIcon } from "obsidian";
 import { DOMRegistry, DOMElementKey } from './dom-registry';
 
 // ──────────────────────────────────────────────────────────────────────
@@ -229,27 +230,33 @@ export interface ButtonGroupConfig {
  * ```typescript
  * createButton(container, {
  *   icon: ICONS.play,
- *   title: 'Play (Shift+Space)',
+ *   title: 'Play (Space)',
  *   onClick: () => engine.play(),
  *   className: 'play-btn'
  * });
  * ```
  */
-export function createButton(
-  parent: HTMLElement,
-  config: ButtonConfig
-): HTMLButtonElement {
-  const className = config.className
-    ? `${CSS_CLASSES.btn} ${config.className}`
-    : CSS_CLASSES.btn;
+export function createButton(parent: HTMLElement, config: ButtonConfig): HTMLButtonElement {
+  const className = config.className || CSS_CLASSES.btn;
 
-  const btn = parent.createEl('button', {
-    text: config.icon,
+  const btn = parent.createEl("button", {
     cls: className,
-    attr: { title: config.title }
+    attr: {
+      "aria-label": config.title,
+      type: "button",
+    },
   });
 
-  btn.addEventListener('click', config.onClick);
+  // Icon handling:
+  // - "lucide:play" -> renders Obsidian/Lucide SVG (monochrome, uses currentColor)
+  // - anything else -> falls back to text (existing behavior)
+  if (config.icon?.startsWith("lucide:")) {
+    setIcon(btn, config.icon.slice("lucide:".length));
+  } else if (config.icon) {
+    btn.setText(config.icon);
+  }
+
+  btn.addEventListener("click", config.onClick);
   return btn;
 }
 
@@ -292,7 +299,7 @@ export function createNumberControl(
   // Decrement button
   createButton(container, {
     icon: config.decrementIcon || ICONS.decrement,
-    title: config.decrementTitle || `Decrease (${config.increment || 1})`,
+    title: config.decrementTitle || `Decrease (-${config.increment || 1})`,
     onClick: config.onDecrement,
     className: CSS_CLASSES.smallBtn
   });
@@ -392,16 +399,16 @@ export function createPlayPauseButtons(
 ): void {
   const playBtn = createButton(parent, {
     icon: ICONS.play,
-    title: 'Play (Shift+Space)',
+    title: 'Play (Space)',
     onClick: onPlay,
-    className: CSS_CLASSES.playBtn
+    className: `${CSS_CLASSES.toggleBtn} ${CSS_CLASSES.playBtn}`,
   });
 
   const pauseBtn = createButton(parent, {
     icon: ICONS.pause,
-    title: 'Pause (Shift+Space)',
+    title: 'Pause (Space)',
     onClick: onPause,
-    className: `${CSS_CLASSES.pauseBtn} ${CSS_CLASSES.hidden}`
+    className: `${CSS_CLASSES.toggleBtn} ${CSS_CLASSES.pauseBtn} ${CSS_CLASSES.hidden}`,
   });
 
   registry.register('playBtn', playBtn);

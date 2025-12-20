@@ -9,16 +9,25 @@
  */
 
 import { HeadingContext } from './types';
+import { setIcon } from "obsidian";
 import { MenuBuilder } from './menu-builder';
 import { RSVPEngine } from './rsvp-engine';
 import { TimeoutManager } from './services/timeout-manager';
 import { CSS_CLASSES } from './constants';
+
+type BreadcrumbManagerOptions = {
+  onPlayStateChange?: (isPlaying: boolean) => void;
+  canAutoResume?: () => boolean;
+};
 
 export class BreadcrumbManager {
   private breadcrumbEl: HTMLElement;
   private engine: RSVPEngine;
   private timeoutManager: TimeoutManager;
   private lastHeadingContext: HeadingContext | null = null;
+  private onPlayStateChange?: (isPlaying: boolean) => void;
+  private canAutoResume?: () => boolean;
+  private activeOutlineMenu: import('./menu-builder').MenuHandle | null = null;
 
   /**
    * Callout icon mapping (consistent with WordDisplay)
@@ -38,10 +47,17 @@ export class BreadcrumbManager {
     quote: '💬'
   };
 
-  constructor(breadcrumbEl: HTMLElement, engine: RSVPEngine, timeoutManager: TimeoutManager) {
+  constructor(
+    breadcrumbEl: HTMLElement,
+    engine: RSVPEngine,
+    timeoutManager: TimeoutManager,
+    opts: BreadcrumbManagerOptions = {}
+  ) {
     this.breadcrumbEl = breadcrumbEl;
     this.engine = engine;
     this.timeoutManager = timeoutManager;
+    this.onPlayStateChange = opts.onPlayStateChange;
+    this.canAutoResume = opts.canAutoResume;
   }
 
   /**
@@ -51,68 +67,54 @@ export class BreadcrumbManager {
    * @param context - Current heading context from engine
    */
   updateBreadcrumb(context: HeadingContext): void {
-    if (!context || context.breadcrumb.length === 0) {
-      // No headings, hide breadcrumb
+    const hasAnyHeadings = this.engine.getHeadings().length > 0;
+
+    if (!hasAnyHeadings) {
       this.breadcrumbEl.toggleClass(CSS_CLASSES.hidden, true);
       return;
     }
 
-    // Show breadcrumb
     this.breadcrumbEl.toggleClass(CSS_CLASSES.hidden, false);
     this.breadcrumbEl.empty();
 
-    // === SIMPLIFIED BREADCRUMB: 📑 H1 › H2 › H3 ▼ ===
+    // Lucide icon (no emoji)
+    const docIcon = this.breadcrumbEl.createSpan({ cls: "dashreader-breadcrumb-icon" });
+    setIcon(docIcon, "file-text");
+    docIcon.addEventListener("click", () => this.showOutlineMenu(docIcon));
 
-    // Document icon
-    this.breadcrumbEl.createSpan({
-      text: '📑',
-      cls: 'dashreader-breadcrumb-icon'
-    });
+    // NEW: wrapper that will shrink (ellipsis) while icons stay visible
+    const pathEl = this.breadcrumbEl.createSpan({ cls: "dashreader-breadcrumb-path" });
 
-    // Build breadcrumb path
-    context.breadcrumb.forEach((heading, index) => {
-      // Add separator between items
-      if (index > 0) {
-        this.breadcrumbEl.createSpan({
-          text: '›',
-          cls: 'dashreader-breadcrumb-separator'
+    // If we’re before the first heading, show a placeholder instead of hiding
+    if (!context || context.breadcrumb.length === 0) {
+      pathEl.createSpan({
+        text: "Top",
+        cls: "dashreader-breadcrumb-item dashreader-breadcrumb-item--last"
+      });
+    } else {
+      const lastIdx = context.breadcrumb.length - 1;
+      
+      // existing breadcrumb path rendering (keep your current loop here)
+      context.breadcrumb.forEach((heading, index) => {
+        if (index > 0) {
+          pathEl.createSpan({ text: "›", cls: "dashreader-breadcrumb-separator" });
+        }
+
+        const itemSpan = pathEl.createSpan({
+          cls: `dashreader-breadcrumb-item ${index === lastIdx ? "dashreader-breadcrumb-item--last" : ""}`.trim()
         });
-      }
 
-      // Create breadcrumb item (clickable text)
-      const itemSpan = this.breadcrumbEl.createSpan({
-        cls: 'dashreader-breadcrumb-item'
+        const displayText = heading.text.replace(/^\[CALLOUT:[\w-]+\]/, "").trim();
+        itemSpan.textContent = displayText;
+
+        itemSpan.addEventListener("click", () => this.navigateToHeading(heading.wordIndex));
       });
+    }
 
-      // Callout icon if applicable
-      const calloutMatch = heading.text.match(/^\[CALLOUT:([\w-]+)\]/);
-      let displayText = heading.text;
-      let icon = '';
-
-      if (calloutMatch) {
-        const calloutType = calloutMatch[1];
-        icon = this.calloutIcons[calloutType.toLowerCase()] || '📌';
-        displayText = heading.text.replace(/^\[CALLOUT:[\w-]+\]/, '').trim();
-      }
-
-      // Build text with optional icon
-      itemSpan.textContent = icon ? `${icon} ${displayText}` : displayText;
-
-      // Click on item -> navigate to heading
-      itemSpan.addEventListener('click', () => {
-        this.navigateToHeading(heading.wordIndex);
-      });
-    });
-
-    // Single dropdown at the end - opens full outline
-    const dropdown = this.breadcrumbEl.createSpan({
-      text: '▼',
-      cls: 'dashreader-breadcrumb-dropdown'
-    });
-
-    dropdown.addEventListener('click', () => {
-      this.showOutlineMenu(dropdown);
-    });
+    // Chevron dropdown stays OUTSIDE pathEl so it never gets pushed off-screen
+    const dropdown = this.breadcrumbEl.createSpan({ cls: "dashreader-breadcrumb-dropdown" });
+    setIcon(dropdown, "chevron-down");
+    dropdown.addEventListener("click", () => this.showOutlineMenu(dropdown));
 
     this.lastHeadingContext = context;
   }
@@ -122,10 +124,13 @@ export class BreadcrumbManager {
    * Called before opening a new menu to ensure only one menu is visible
    */
   private closeAllMenus(): void {
-    // Remove all outline menus
-    document.querySelectorAll('.dashreader-outline-menu').forEach(menu => {
-      menu.remove();
-    });
+    if (this.activeOutlineMenu?.isOpen()) {
+      this.activeOutlineMenu.close('dismiss');
+    }
+    this.activeOutlineMenu = null;
+
+    // safety: remove any stray menus
+    document.querySelectorAll('.dashreader-outline-menu').forEach(menu => menu.remove());
   }
 
   /**
@@ -158,7 +163,14 @@ export class BreadcrumbManager {
    * @param anchorEl - The element to position the menu relative to
    */
   private showOutlineMenu(anchorEl: HTMLElement): void {
-    // Close any existing menus first
+    // Toggle: if already open, close and stop (do NOT re-open)
+    if (this.activeOutlineMenu?.isOpen()) {
+      this.activeOutlineMenu.close('dismiss');
+      this.activeOutlineMenu = null;
+      return;
+    }
+
+    // Otherwise ensure nothing else is hanging around
     this.closeAllMenus();
 
     const allHeadings = this.engine.getHeadings();
@@ -166,6 +178,14 @@ export class BreadcrumbManager {
     if (allHeadings.length === 0) {
       return; // No headings to display
     }
+
+    const wasPlayingBeforeMenu = this.engine.getIsPlaying();
+    if (wasPlayingBeforeMenu) {
+      this.engine.pause();
+      this.onPlayStateChange?.(false);
+    }
+
+    let didSelect = false;
 
     // Get current position to highlight active heading
     const currentIndex = this.engine.getCurrentIndex();
@@ -185,16 +205,40 @@ export class BreadcrumbManager {
         level: h.level,
         isCurrent: currentHeading ? h.wordIndex === currentHeading.wordIndex : false
       })),
-      onItemClick: (wordIndex) => this.navigateToHeading(wordIndex),
+      onItemClick: (wordIndex) => {
+        didSelect = true;
+        this.navigateToHeading(wordIndex);
+      },
       showLevel: true,
       indentByLevel: true,
-      timeoutManager: this.timeoutManager
-    });
+      timeoutManager: this.timeoutManager,
+      onClose: (reason) => {
+        this.activeOutlineMenu = null; // <-- FIRST LINE
 
-    // Scroll to current item if present
-    if (currentHeading) {
-      MenuBuilder.scrollToCurrentItem(menu, this.timeoutManager);
-    }
+        const canResume = this.canAutoResume ? this.canAutoResume() : true;
+        if (!canResume) return;
+
+        if (reason === 'dismiss') {
+          if (wasPlayingBeforeMenu) {
+            this.engine.play();
+            this.onPlayStateChange?.(true);
+          }
+          return;
+        }
+
+        // only resume if we were playing before opening the menu
+        if (reason === 'select' && didSelect) {
+          if (wasPlayingBeforeMenu) {
+            this.engine.play();
+            this.onPlayStateChange?.(true);
+          } else {
+            this.onPlayStateChange?.(false);
+          }
+        }
+      }
+    });
+    this.activeOutlineMenu = menu;
+    MenuBuilder.scrollToCurrentItem(menu.el, this.timeoutManager);
   }
 
   /**
@@ -204,25 +248,9 @@ export class BreadcrumbManager {
    * @param wordIndex - Word index to navigate to
    */
   private navigateToHeading(wordIndex: number): void {
-    const wasPlaying = this.engine.getIsPlaying();
-
-    if (wasPlaying) {
-      this.engine.pause();
-    }
-
-    // Use the engine's jump functionality (via rewind/forward)
-    const currentIndex = this.engine.getCurrentIndex();
-    const delta = wordIndex - currentIndex;
-
-    if (delta < 0) {
-      this.engine.rewind(Math.abs(delta));
-    } else if (delta > 0) {
-      this.engine.forward(delta);
-    }
-
-    if (wasPlaying) {
-      this.engine.play();
-    }
+    // Direct seek: exact heading index (no linebreak drift)
+    this.engine.jumpToIndex(wordIndex);
+    this.onPlayStateChange?.(this.engine.getIsPlaying());
   }
 
   /**

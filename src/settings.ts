@@ -75,14 +75,37 @@ export class DashReaderSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    new Setting(containerEl).setName("Dashreader settings").setHeading();
+    new Setting(containerEl).setName("Dashreader Settings").setHeading();
+
+    // Section: Display
+    new Setting(containerEl).setName("Display Options").setHeading();
+
+    new Setting(containerEl)
+      .setName('Show Breadcrumb')
+      .setDesc('Display breadcrumb navigation at the top.')
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.showBreadcrumb)
+        .onChange(async (value) => {
+          this.plugin.settings.showBreadcrumb = value;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName('Show Progress Bar')
+      .setDesc('Display reading progress bar.')
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.showProgress)
+        .onChange(async (value) => {
+          this.plugin.settings.showProgress = value;
+          await this.plugin.saveSettings();
+        }));
 
     // Section: Lecture
-    new Setting(containerEl).setName("Reading settings").setHeading();
+    new Setting(containerEl).setName("Reading Settings").setHeading();
 
     const wpmSetting = new Setting(containerEl)
-      .setName('Words per minute')
-      .setDesc('Reading speed (50-5000)');
+      .setName('Words per Minute')
+      .setDesc('Reading speed (50-5000).');
     this.createSliderWithInput(
       wpmSetting,
       50, 5000, 25,
@@ -94,23 +117,9 @@ export class DashReaderSettingTab extends PluginSettingTab {
       }
     );
 
-    const chunkSetting = new Setting(containerEl)
-      .setName('Words at a time')
-      .setDesc('Number of words displayed simultaneously (1-5)');
-    this.createSliderWithInput(
-      chunkSetting,
-      1, 5, 1,
-      this.plugin.settings.chunkSize,
-      '',
-      async (value) => {
-        this.plugin.settings.chunkSize = value;
-        await this.plugin.saveSettings();
-      }
-    );
-
     const fontSizeSetting = new Setting(containerEl)
-      .setName('Font size')
-      .setDesc('Font size in pixels (20-120px)');
+      .setName('Font Size (Desktop)')
+      .setDesc('Font size in pixels (20-120px).');
     this.createSliderWithInput(
       fontSizeSetting,
       20, 120, 4,
@@ -122,11 +131,70 @@ export class DashReaderSettingTab extends PluginSettingTab {
       }
     );
 
+    const chunkSetting = new Setting(containerEl)
+      .setName('Words at a Time (Desktop)')
+      .setDesc('Number of words displayed simultaneously for desktop profile (1–5).');
+    this.createSliderWithInput(
+      chunkSetting,
+      1, 5, 1,
+      this.plugin.settings.chunkSize,
+      '',
+      async (value) => {
+        this.plugin.settings.chunkSize = value;
+        await this.plugin.saveSettings();
+      }
+    );
+
+    const mobileFontSizeSetting = new Setting(containerEl)
+      .setName('Font Size (Mobile)')
+      .setDesc('Font size in pixels used on mobile/touch devices (12-120px).');
+
+    this.createSliderWithInput(
+      mobileFontSizeSetting,
+      12, 120, 4,
+      this.plugin.settings.mobileFontSize,
+      'px',
+      async (value) => {
+        this.plugin.settings.mobileFontSize = value;
+        await this.plugin.saveSettings();
+      }
+    );
+
+    const mobileChunkSetting = new Setting(containerEl)
+      .setName('Words at a Time (Mobile)')
+      .setDesc('Number of words displayed simultaneously for mobile/touch profile (1–5).');
+    this.createSliderWithInput(
+      mobileChunkSetting,
+      1, 5, 1,
+      this.plugin.settings.mobileChunkSize,
+      '',
+      async (value) => {
+        this.plugin.settings.mobileChunkSize = value;
+        await this.plugin.saveSettings();
+      }
+    );
+
+    const minTokenFontSizeSetting = new Setting(containerEl)
+      .setName('Minimum Token Font Size')
+      .setDesc('Lowest font size used when a single long token is shrunk to fit (8–48px).');
+
+    this.createSliderWithInput(
+      minTokenFontSizeSetting,
+      8, 48, 1,
+      this.plugin.settings.minTokenFontSize,
+      'px',
+      async (value) => {
+        this.plugin.settings.minTokenFontSize = value;
+        await this.plugin.saveSettings();
+      }
+    );
+
     new Setting(containerEl)
-      .setName('Font family')
-      .setDesc('Font family for text display')
+      .setName('Font Family')
+      .setDesc('Font family for text display.')
       .addDropdown(dropdown => dropdown
         .addOption('inherit', 'Default')
+        .addOption('literata', 'Literata')
         .addOption('monospace', 'Monospace')
         .addOption('serif', 'Serif')
         .addOption('sans-serif', 'Sans-serif')
@@ -137,11 +205,11 @@ export class DashReaderSettingTab extends PluginSettingTab {
         }));
 
     // Section: Reading Enhancements
-    new Setting(containerEl).setName("Reading enhancements").setHeading();
+    new Setting(containerEl).setName("Reading Enhancements").setHeading();
 
     new Setting(containerEl)
-      .setName('Slow start')
-      .setDesc('Gradually increase speed over first 5 words for comfortable start')
+      .setName('Slow Start')
+      .setDesc('Gradually increase speed over first 5 words for comfortable start.')
       .addToggle(toggle => toggle
         .setValue(this.plugin.settings.enableSlowStart)
         .onChange(async (value) => {
@@ -150,8 +218,8 @@ export class DashReaderSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName('Enable acceleration')
-      .setDesc('Gradually increase reading speed over time')
+      .setName('Enable Acceleration')
+      .setDesc('Gradually increase reading speed over time.')
       .addToggle(toggle => toggle
         .setValue(this.plugin.settings.enableAcceleration)
         .onChange(async (value) => {
@@ -160,8 +228,8 @@ export class DashReaderSettingTab extends PluginSettingTab {
         }));
 
     const accelDurationSetting = new Setting(containerEl)
-      .setName('Acceleration duration')
-      .setDesc('Duration to reach target speed (seconds)');
+      .setName('Acceleration Duration')
+      .setDesc('Duration to reach target speed (seconds).');
     this.createSliderWithInput(
       accelDurationSetting,
       10, 120, 5,
@@ -174,8 +242,8 @@ export class DashReaderSettingTab extends PluginSettingTab {
     );
 
     const accelTargetSetting = new Setting(containerEl)
-      .setName('Target wpm')
-      .setDesc('Target reading speed to reach (50-5000)');
+      .setName('Target WPM')
+      .setDesc('Target reading speed to reach (50-5000).');
     this.createSliderWithInput(
       accelTargetSetting,
       50, 5000, 25,
@@ -191,44 +259,45 @@ export class DashReaderSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("Appearance").setHeading();
 
     new Setting(containerEl)
-      .setName('Highlight color')
-      .setDesc('Color for the center character highlight')
+      .setName('Highlight Color')
+      .setDesc('Leave blank to use theme/CSS (This setting now maps to --dashreader-highlight-color.).')
       .addText(text => text
-        .setPlaceholder('#4a9eff')
+        .setPlaceholder('theme')
         .setValue(this.plugin.settings.highlightColor)
         .onChange(async (value) => {
-          this.plugin.settings.highlightColor = value;
+          this.plugin.settings.highlightColor = value.trim();
           await this.plugin.saveSettings();
         }));
 
     new Setting(containerEl)
-      .setName('Font color')
-      .setDesc('Text color')
+      .setName('Font Color')
+      .setDesc('Leave blank to use theme/CSS (Maps to --dashreader-font-color.).')
       .addText(text => text
-        .setPlaceholder('#ffffff')
+        .setPlaceholder('theme')
         .setValue(this.plugin.settings.fontColor)
         .onChange(async (value) => {
-          this.plugin.settings.fontColor = value;
+          this.plugin.settings.fontColor = value.trim();
           await this.plugin.saveSettings();
         }));
 
     new Setting(containerEl)
-      .setName('Background color')
-      .setDesc('Background color')
+      .setName('Background Color')
+      .setDesc('Leave blank to use theme/CSS (Maps to --dashreader-background-color.).')
       .addText(text => text
-        .setPlaceholder('#1e1e1e')
+        .setPlaceholder('theme')
         .setValue(this.plugin.settings.backgroundColor)
         .onChange(async (value) => {
-          this.plugin.settings.backgroundColor = value;
+          this.plugin.settings.backgroundColor = value.trim();
           await this.plugin.saveSettings();
         }));
 
     // Section: Context
-    new Setting(containerEl).setName("Context display").setHeading();
+    new Setting(containerEl).setName("Context Display").setHeading();
 
+    // Desktop context toggle (matches rsvp-view: showContext)
     new Setting(containerEl)
-      .setName('Show context')
-      .setDesc('Display words before and after current word')
+      .setName('Show Context (Desktop)')
+      .setDesc('Display line-based context around the current phrase.')
       .addToggle(toggle => toggle
         .setValue(this.plugin.settings.showContext)
         .onChange(async (value) => {
@@ -236,49 +305,83 @@ export class DashReaderSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    const contextSetting = new Setting(containerEl)
-      .setName('Context words')
-      .setDesc('Number of context words to display (1-10)');
+    // Desktop: extra lines 0–10
+    const contextLinesSetting = new Setting(containerEl)
+      .setName('Context Lines (Desktop)')
+      .setDesc('Extra full lines above and below the anchor line (0–10). 0 = anchor only.');
     this.createSliderWithInput(
-      contextSetting,
-      1, 10, 1,
-      this.plugin.settings.contextWords,
+      contextLinesSetting,
+      0, 10, 1,
+      this.plugin.settings.contextLines,
       '',
       async (value) => {
-        this.plugin.settings.contextWords = value;
+        this.plugin.settings.contextLines = value;
         await this.plugin.saveSettings();
       }
     );
 
-    // === Navigation Display ===
-    new Setting(containerEl).setName("Navigation").setHeading();
+    // Desktop: context font size
+    const contextFontSizeSetting = new Setting(containerEl)
+      .setName('Context Font Size (Desktop)')
+      .setDesc('Font size for context panels (10–32px).');
+    this.createSliderWithInput(
+      contextFontSizeSetting,
+      10, 32, 1,
+      this.plugin.settings.contextFontSize,
+      'px',
+      async (value) => {
+        this.plugin.settings.contextFontSize = value;
+        await this.plugin.saveSettings();
+      }
+    );
 
+    // Mobile context toggle (matches rsvp-view: mobileShowContext)
     new Setting(containerEl)
-      .setName('Show minimap')
-      .setDesc('Display vertical minimap with document structure and progress')
+      .setName('Show Context (Mobile)')
+      .setDesc('Display line-based context on mobile profile.')
       .addToggle(toggle => toggle
-        .setValue(this.plugin.settings.showMinimap)
+        .setValue(this.plugin.settings.mobileShowContext)
         .onChange(async (value) => {
-          this.plugin.settings.showMinimap = value;
+          this.plugin.settings.mobileShowContext = value;
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl)
-      .setName('Show breadcrumb')
-      .setDesc('Display breadcrumb navigation at the top')
-      .addToggle(toggle => toggle
-        .setValue(this.plugin.settings.showBreadcrumb)
-        .onChange(async (value) => {
-          this.plugin.settings.showBreadcrumb = value;
-          await this.plugin.saveSettings();
-        }));
+    // Mobile: extra lines 0–10
+    const mobileContextLinesSetting = new Setting(containerEl)
+      .setName('Context Lines (Mobile)')
+      .setDesc('Extra full lines above and below the anchor line on mobile (0–10).');
+    this.createSliderWithInput(
+      mobileContextLinesSetting,
+      0, 10, 1,
+      this.plugin.settings.mobileContextLines,
+      '',
+      async (value) => {
+        this.plugin.settings.mobileContextLines = value;
+        await this.plugin.saveSettings();
+      }
+    );
+
+    // Mobile: context font size
+    const mobileContextFontSizeSetting = new Setting(containerEl)
+      .setName('Context Font Size (Mobile)')
+      .setDesc('Font size for context panels on mobile (10–32px).');
+    this.createSliderWithInput(
+      mobileContextFontSizeSetting,
+      10, 32, 1,
+      this.plugin.settings.mobileContextFontSize,
+      'px',
+      async (value) => {
+        this.plugin.settings.mobileContextFontSize = value;
+        await this.plugin.saveSettings();
+      }
+    );
 
     // Section: Micropause
     new Setting(containerEl).setName("Micropause").setHeading();
 
     new Setting(containerEl)
-      .setName('Enable micropause')
-      .setDesc('Automatic pauses based on punctuation and word length')
+      .setName('Enable Micropause')
+      .setDesc('Automatic pauses based on punctuation and word length.')
       .addToggle(toggle => toggle
         .setValue(this.plugin.settings.enableMicropause)
         .onChange(async (value) => {
@@ -287,8 +390,8 @@ export class DashReaderSettingTab extends PluginSettingTab {
         }));
 
     const punctuationSetting = new Setting(containerEl)
-      .setName('Sentence-ending punctuation pause')
-      .setDesc('Pause multiplier for .,!? (1.0-3.0)');
+      .setName('Sentence-ending Punctuation Pause')
+      .setDesc('Pause multiplier for .,!? (1.0-3.0).');
     this.createSliderWithInput(
       punctuationSetting,
       1.0, 3.0, 0.1,
@@ -301,8 +404,8 @@ export class DashReaderSettingTab extends PluginSettingTab {
     );
 
     const otherPunctuationSetting = new Setting(containerEl)
-      .setName('Other punctuation pause')
-      .setDesc('Pause multiplier for ;:, (1.0-3.0)');
+      .setName('Other Punctuation Pause')
+      .setDesc('Pause multiplier for ;:, (1.0-3.0).');
     this.createSliderWithInput(
       otherPunctuationSetting,
       1.0, 3.0, 0.1,
@@ -315,8 +418,8 @@ export class DashReaderSettingTab extends PluginSettingTab {
     );
 
     const longWordsSetting = new Setting(containerEl)
-      .setName('Long words pause')
-      .setDesc('Pause multiplier for long words >8 chars (1.0-2.0)');
+      .setName('Long Words Pause')
+      .setDesc('Pause multiplier for long words >8 chars (1.0-2.0).');
     this.createSliderWithInput(
       longWordsSetting,
       1.0, 2.0, 0.1,
@@ -329,8 +432,8 @@ export class DashReaderSettingTab extends PluginSettingTab {
     );
 
     const paragraphSetting = new Setting(containerEl)
-      .setName('Paragraph pause')
-      .setDesc('Pause multiplier for paragraph breaks (1.0-5.0)');
+      .setName('Paragraph Pause')
+      .setDesc('Pause multiplier for paragraph breaks (1.0-5.0).');
     this.createSliderWithInput(
       paragraphSetting,
       1.0, 5.0, 0.1,
@@ -343,8 +446,8 @@ export class DashReaderSettingTab extends PluginSettingTab {
     );
 
     const numbersSetting = new Setting(containerEl)
-      .setName('Numbers pause')
-      .setDesc('Pause multiplier for numbers and dates (1.0-3.0)');
+      .setName('Numbers Pause')
+      .setDesc('Pause multiplier for numbers and dates (1.0-3.0).');
     this.createSliderWithInput(
       numbersSetting,
       1.0, 3.0, 0.1,
@@ -357,8 +460,8 @@ export class DashReaderSettingTab extends PluginSettingTab {
     );
 
     const sectionMarkersSetting = new Setting(containerEl)
-      .setName('Section markers pause')
-      .setDesc('Pause multiplier for 1., i., a., etc. (1.0-3.0)');
+      .setName('Section Markers Pause')
+      .setDesc('Pause multiplier for 1., i., a., etc. (1.0-3.0).');
     this.createSliderWithInput(
       sectionMarkersSetting,
       1.0, 3.0, 0.1,
@@ -371,8 +474,8 @@ export class DashReaderSettingTab extends PluginSettingTab {
     );
 
     const listBulletsSetting = new Setting(containerEl)
-      .setName('List bullets pause')
-      .setDesc('Pause multiplier for -, *, +, • (1.0-3.0)');
+      .setName('List Bullets Pause')
+      .setDesc('Pause multiplier for -, *, +, • (1.0-3.0).');
     this.createSliderWithInput(
       listBulletsSetting,
       1.0, 3.0, 0.1,
@@ -385,8 +488,8 @@ export class DashReaderSettingTab extends PluginSettingTab {
     );
 
     const calloutsSetting = new Setting(containerEl)
-      .setName('Callouts pause')
-      .setDesc('Pause multiplier for Obsidian callouts (1.0-3.0)');
+      .setName('Callouts Pause')
+      .setDesc('Pause multiplier for Obsidian callouts (1.0-3.0).');
     this.createSliderWithInput(
       calloutsSetting,
       1.0, 3.0, 0.1,
@@ -402,8 +505,8 @@ export class DashReaderSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("Auto-start").setHeading();
 
     new Setting(containerEl)
-      .setName('Auto-start reading')
-      .setDesc('Automatically start reading after text loads')
+      .setName('Auto-start Reading')
+      .setDesc('Automatically start reading after text loads.')
       .addToggle(toggle => toggle
         .setValue(this.plugin.settings.autoStart)
         .onChange(async (value) => {
@@ -412,8 +515,8 @@ export class DashReaderSettingTab extends PluginSettingTab {
         }));
 
     const autoStartDelaySetting = new Setting(containerEl)
-      .setName('Auto-start delay')
-      .setDesc('Delay before auto-start (seconds)');
+      .setName('Auto-start Delay')
+      .setDesc('Delay before auto-start (seconds).');
     this.createSliderWithInput(
       autoStartDelaySetting,
       1, 10, 1,
@@ -425,31 +528,8 @@ export class DashReaderSettingTab extends PluginSettingTab {
       }
     );
 
-    // Section: Display
-    new Setting(containerEl).setName("Display options").setHeading();
-
-    new Setting(containerEl)
-      .setName('Show progress bar')
-      .setDesc('Display reading progress bar')
-      .addToggle(toggle => toggle
-        .setValue(this.plugin.settings.showProgress)
-        .onChange(async (value) => {
-          this.plugin.settings.showProgress = value;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(containerEl)
-      .setName('Show statistics')
-      .setDesc('Display reading statistics')
-      .addToggle(toggle => toggle
-        .setValue(this.plugin.settings.showStats)
-        .onChange(async (value) => {
-          this.plugin.settings.showStats = value;
-          await this.plugin.saveSettings();
-        }));
-
     // Section: Hotkeys
-    new Setting(containerEl).setName("Keyboard shortcuts").setHeading();
+    new Setting(containerEl).setName("Keyboard Shortcuts").setHeading();
     containerEl.createEl('p', {
       text: 'Note: hotkey customization is available in Obsidian\'s hotkeys settings.',
       cls: 'setting-item-description'

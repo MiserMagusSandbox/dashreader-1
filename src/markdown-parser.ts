@@ -72,7 +72,7 @@ export class MarkdownParser {
     text = text.replace(/^[\s]*[-*_]{3,}[\s]*$/gm, '');
 
     // 15. Enlever les tags/hashtags Obsidian #tag (mais pas dans les mots)
-    text = text.replace(/(?:^|\s)(#[a-zA-Z0-9_/-]+)/g, '');
+    // text = text.replace(/(?:^|\s)(#[a-zA-Z0-9_/-]+)/g, '');
 
     // 16. Enlever les footnotes [^1]
     text = text.replace(/\[\^[^\]]+\]/g, '');
