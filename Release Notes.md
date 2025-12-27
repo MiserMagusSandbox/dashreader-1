@@ -1,3 +1,19 @@
+## v2.0.1 — Font Picker UI update
+
+### Added
+
+* Installed-font dropdown for **Font Family** setting (Obsidian-style suggestions).
+* Single-click behavior: focusing/clicking the field opens the font list immediately.
+* Keyboard support in the dropdown: ↑/↓ to navigate, Enter to select, Esc to close.
+* Viewport-aware dropdown positioning (opens above when near the bottom of the screen).
+
+### Changed
+
+* Replaced the native `datalist` font picker with a custom, themed suggestion menu.
+* The font list is now **installed fonts only** (no generic/hard-coded entries).
+
+---
+
 ## v2.0.0 — Major fork / rewrite (from upstream v1.4.2)
 
 This repository is a major fork of DashReader (upstream v1.4.2). The plugin has been reworked into a focus-first RSVP reader with a different UI, different navigation model, and a substantially different internal structure. This fork is maintained independently and is not intended as a drop-in upstream contribution.

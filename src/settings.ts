@@ -1,5 +1,209 @@
 import { App, PluginSettingTab, Setting } from 'obsidian';
 import DashReaderPlugin from '../main';
+import { getInstalledFontFamilies } from './services/font-family';
+
+class FontFamilySuggest {
+  private suggestEl: HTMLDivElement;
+  private isOpen = false;
+  private items: string[] = [];
+  private filtered: string[] = [];
+  private selectedIndex = -1;
+
+  private onDocMouseDown = (evt: MouseEvent) => {
+    const t = evt.target as Node | null;
+    if (!t) return;
+    if (t === this.inputEl || this.inputEl.contains(t)) return;
+    if (t === this.suggestEl || this.suggestEl.contains(t)) return;
+    this.close();
+  };
+
+  private onWinResize = () => this.position();
+
+  constructor(
+    private inputEl: HTMLInputElement,
+    private getItems: () => string[],
+    private onSelect: (value: string) => void
+  ) {
+    this.suggestEl = document.body.createDiv({
+      cls: "dashreader-font-suggest",
+    });
+    this.suggestEl.style.display = "none";
+
+    // Open on single click + keep typing working
+    this.inputEl.addEventListener("focus", () => this.open());
+    this.inputEl.addEventListener("mousedown", () => {
+      // ensures first click opens even before any typing
+      if (!this.isOpen) queueMicrotask(() => this.open());
+    });
+
+    this.inputEl.addEventListener("input", () => this.open());
+
+    // Keyboard navigation
+    this.inputEl.addEventListener("keydown", (e) => this.onKeydown(e));
+
+    // Close when leaving the input (but allow click selection)
+    this.inputEl.addEventListener("blur", () => {
+      window.setTimeout(() => {
+        if (!this.suggestEl.matches(":hover")) this.close();
+      }, 120);
+    });
+
+    // Prevent blur on click inside dropdown
+    this.suggestEl.addEventListener("mousedown", (e) => e.preventDefault());
+  }
+
+  destroy(): void {
+    this.close();
+    this.suggestEl.remove();
+    document.removeEventListener("mousedown", this.onDocMouseDown);
+    window.removeEventListener("resize", this.onWinResize);
+  }
+
+  private open(): void {
+    this.items = this.getItems();
+    this.filterAndRender();
+    if (!this.filtered.length) {
+      this.close();
+      return;
+    }
+
+    if (!this.isOpen) {
+      this.isOpen = true;
+      this.suggestEl.style.display = "block";
+      document.addEventListener("mousedown", this.onDocMouseDown);
+      window.addEventListener("resize", this.onWinResize);
+    }
+
+    this.position();
+  }
+
+  private close(): void {
+    if (!this.isOpen) return;
+    this.isOpen = false;
+    this.suggestEl.style.display = "none";
+    this.suggestEl.empty();
+    document.removeEventListener("mousedown", this.onDocMouseDown);
+    window.removeEventListener("resize", this.onWinResize);
+  }
+
+  private position(): void {
+    if (!this.isOpen) return;
+
+    const r = this.inputEl.getBoundingClientRect();
+    const margin = 6;
+    const maxH = 320;
+
+    const spaceBelow = window.innerHeight - r.bottom - margin;
+    const spaceAbove = r.top - margin;
+
+    const openUp = spaceBelow < 200 && spaceAbove > spaceBelow;
+    const height = Math.min(maxH, openUp ? spaceAbove : spaceBelow);
+
+    this.suggestEl.style.left = `${Math.round(r.left)}px`;
+    this.suggestEl.style.width = `${Math.round(r.width)}px`;
+    this.suggestEl.style.maxHeight = `${Math.max(120, height)}px`;
+
+    if (openUp) {
+      this.suggestEl.style.top = `${Math.round(r.top - margin)}px`;
+      this.suggestEl.style.transform = "translateY(-100%)";
+    } else {
+      this.suggestEl.style.top = `${Math.round(r.bottom + margin)}px`;
+      this.suggestEl.style.transform = "translateY(0)";
+    }
+  }
+
+  private filterAndRender(): void {
+    const q = this.inputEl.value.trim().toLowerCase();
+    const all = this.items;
+
+    const filtered = q
+      ? all.filter((f) => f.toLowerCase().includes(q))
+      : all;
+
+    // Cap to keep UI snappy with huge font lists
+    this.filtered = filtered.slice(0, 400);
+    this.selectedIndex = this.filtered.length ? 0 : -1;
+
+    this.render();
+  }
+
+  private render(): void {
+    this.suggestEl.empty();
+
+    if (!this.filtered.length) {
+      this.suggestEl.createDiv({ cls: "dashreader-font-suggest-empty", text: "No matches" });
+      return;
+    }
+
+    this.filtered.forEach((font, idx) => {
+      const item = this.suggestEl.createDiv({
+        cls: "dashreader-font-suggest-item",
+        text: font,
+      });
+
+      if (idx === this.selectedIndex) item.classList.add("is-selected");
+
+      item.addEventListener("mouseenter", () => {
+        this.selectedIndex = idx;
+        this.refreshSelection();
+      });
+
+      item.addEventListener("click", () => {
+        this.onSelect(font);
+        this.close();
+        this.inputEl.focus();
+      });
+    });
+  }
+
+  private refreshSelection(): void {
+    const children = Array.from(this.suggestEl.children) as HTMLElement[];
+    children.forEach((el, i) => {
+      el.classList.toggle("is-selected", i === this.selectedIndex);
+    });
+
+    const selected = children[this.selectedIndex];
+    if (selected) selected.scrollIntoView({ block: "nearest" });
+  }
+
+  private onKeydown(e: KeyboardEvent): void {
+    if (!this.isOpen && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      this.open();
+      e.preventDefault();
+      return;
+    }
+
+    if (!this.isOpen) return;
+
+    if (e.key === "Escape") {
+      this.close();
+      e.preventDefault();
+      return;
+    }
+
+    if (e.key === "ArrowDown") {
+      this.selectedIndex = Math.min(this.filtered.length - 1, this.selectedIndex + 1);
+      this.refreshSelection();
+      e.preventDefault();
+      return;
+    }
+
+    if (e.key === "ArrowUp") {
+      this.selectedIndex = Math.max(0, this.selectedIndex - 1);
+      this.refreshSelection();
+      e.preventDefault();
+      return;
+    }
+
+    if (e.key === "Enter") {
+      if (this.selectedIndex >= 0 && this.filtered[this.selectedIndex]) {
+        this.onSelect(this.filtered[this.selectedIndex]);
+      }
+      this.close();
+      e.preventDefault();
+    }
+  }
+}
 
 export class DashReaderSettingTab extends PluginSettingTab {
   plugin: DashReaderPlugin;
@@ -189,20 +393,49 @@ export class DashReaderSettingTab extends PluginSettingTab {
       }
     );
 
+    // Cleanup any previous suggest dropdowns (settings tab can re-render)
+    document.querySelectorAll(".dashreader-font-suggest").forEach((el) => el.remove());
+
+    let installedFonts: string[] = [];
+    let suggest: FontFamilySuggest | null = null;
+
     new Setting(containerEl)
-      .setName('Font Family')
-      .setDesc('Font family for text display.')
-      .addDropdown(dropdown => dropdown
-        .addOption('inherit', 'Default')
-        .addOption('literata', 'Literata')
-        .addOption('monospace', 'Monospace')
-        .addOption('serif', 'Serif')
-        .addOption('sans-serif', 'Sans-serif')
-        .setValue(this.plugin.settings.fontFamily)
-        .onChange(async (value) => {
-          this.plugin.settings.fontFamily = value;
+      .setName("Font Family")
+      .setDesc("Applies to the entire DashReader UI. Leave blank to inherit the theme default.")
+      .addText((text) => {
+        text.setPlaceholder("inherit (blank)");
+        text.setValue(this.plugin.settings.fontFamily === "inherit" ? "" : this.plugin.settings.fontFamily);
+
+        const input = text.inputEl;
+        input.setAttr("spellcheck", "false");
+        input.setAttr("autocomplete", "off");
+
+        suggest = new FontFamilySuggest(
+          input,
+          () => installedFonts, // only installed fonts (no hard-coded generics)
+          (value) => {
+            text.setValue(value);
+            this.plugin.settings.fontFamily = value.trim() || "inherit";
+            void this.plugin.saveSettings();
+          }
+        );
+    
+        text.onChange(async (value) => {
+          this.plugin.settings.fontFamily = value.trim() || "inherit";
           await this.plugin.saveSettings();
-        }));
+        });
+      });
+
+    void (async () => {
+      const fonts = await getInstalledFontFamilies();
+
+      // Only real installed fonts; de-dupe is already handled in getInstalledFontFamilies()
+      // Also remove anything weirdly empty.
+      installedFonts = fonts.map((f) => f.trim()).filter(Boolean);
+
+      // If the user focuses before fonts load, refresh suggestions once loaded
+      // (open() re-reads getItems())
+    })();
 
     // Section: Reading Enhancements
     new Setting(containerEl).setName("Reading Enhancements").setHeading();

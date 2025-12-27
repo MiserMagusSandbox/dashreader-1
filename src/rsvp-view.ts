@@ -323,7 +323,7 @@ private _saveSettingsTimer: number | null = null;
     this.applyAppearanceCssVars();
     this.mainContainerEl = this.contentEl.createDiv({ cls: CSS_CLASSES.container });
     // Apply font family broadly (not just the focus word).
-    this.mainContainerEl.style.fontFamily = this.settings.fontFamily || "inherit";
+    this.applyDashReaderFont(this.settings.fontFamily);
     this.buildUI();
     this.engine.setUseMobileProfile(this.isMobileUI());
     this.syncBoldColorToTheme();
@@ -615,7 +615,7 @@ private _saveSettingsTimer: number | null = null;
 
     this.wordEl = displayArea.createDiv({ cls: CSS_CLASSES.word });
     this.wordEl.style.setProperty("font-size", `${this.getActiveFontSize()}px`, "important");
-    this.wordEl.style.fontFamily = this.settings.fontFamily;
+    this.applyDashReaderFont(this.settings.fontFamily);
     this.wordEl.style.textShadow = "none";
     this.wordEl.style.filter = "none";
     this.dom.register('wordEl', this.wordEl);
@@ -1412,6 +1412,39 @@ private _saveSettingsTimer: number | null = null;
     }
   }
 
+  private normalizeFontFamily(input?: string): string {
+    const raw = (input ?? "").trim();
+    if (!raw || raw.toLowerCase() === "default") return "inherit";
+
+    // Back-compat + typo guard
+    const lower = raw.toLowerCase();
+    if (lower === "literata" || lower === "litterata") return '"Literata"';
+
+    // Generic families / keywords
+    const generics = new Set([
+      "inherit", "serif", "sans-serif", "monospace", "cursive", "fantasy",
+      "system-ui", "ui-serif", "ui-sans-serif", "ui-monospace", "ui-rounded",
+      "emoji", "math", "fangsong"
+    ]);
+    if (generics.has(lower)) return lower;
+
+    // Support comma-separated fallback lists; quote names with spaces
+    const parts = raw.split(",").map(p => p.trim()).filter(Boolean);
+    const normalized = parts.map(p => {
+      if (/^["'].*["']$/.test(p)) return p;            // already quoted
+      if (/\s/.test(p)) return `"${p.replace(/"/g, '\\"')}"`;
+      return p;
+    });
+
+    return normalized.join(", ");
+  }
+
+  private applyDashReaderFont(fontFamily?: string): void {
+    const ff = this.normalizeFontFamily(fontFamily);
+    this.mainContainerEl?.style.setProperty("font-family", ff, "important");
+    this.wordEl?.style.setProperty("font-family", ff, "important");
+  }
+
   // ============================================================================
   // SECTION 5: AUTO-LOAD SYSTEM
   // ============================================================================
@@ -2127,14 +2160,14 @@ private _saveSettingsTimer: number | null = null;
     this.applyAppearanceCssVars();
 
     if (this.mainContainerEl) {
-      this.mainContainerEl.style.fontFamily = settings.fontFamily || "inherit";
+      this.applyDashReaderFont(settings.fontFamily);
     }
 
     if (this.wordEl) {
       this.wordEl.style.setProperty("font-size", `${this.getActiveFontSize()}px`, "important");
       this.wordDisplay?.setBaseFontSize(this.getActiveFontSize());
       this.wordDisplay?.setChunkSize(this.engine.getChunkSize());
-      this.wordEl.style.fontFamily = settings.fontFamily;
+      this.applyDashReaderFont(settings.fontFamily);
     }
     if (this.progressBarEl) {
       this.progressBarEl.style.display = settings.showProgress ? "" : "none";

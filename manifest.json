@@ -1,10 +1,10 @@
 {
   "id": "dashreader",
   "name": "DashReader",
-  "version": "1.4.2",
+  "version": "2.0.1",
   "minAppVersion": "0.15.0",
   "description": "Speed reading with RSVP (Rapid Serial Visual Presentation) - Read faster, understand better.",
-  "author": "inattendu",
-  "authorUrl": "https://github.com/inattendu",
+  "author": "MiserMagus, inattendu",
+  "authorUrl": "https://github.com/MiserMagus",
   "isDesktopOnly": false
 }

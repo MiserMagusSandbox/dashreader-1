@@ -991,3 +991,35 @@
   transform: translate(-50%, -50%);
 }
 
+/* Settings: themed, scrollable font suggest dropdown */
+.dashreader-font-suggest {
+  position: fixed;
+  z-index: 100000;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 1px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  overflow-y: auto;
+  overflow-x: hidden;
+  color: var(--text-normal);
+}
+
+.dashreader-font-suggest-item {
+  padding: 6px 0px 6px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.dashreader-font-suggest-item:hover,
+.dashreader-font-suggest-item.is-selected {
+  background: var(--background-modifier-hover);
+}
+
+.dashreader-font-suggest-empty {
+  padding: 6px 10px;
+  opacity: 0.75;
+}
