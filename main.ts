@@ -267,7 +267,7 @@ export default class DashReaderPlugin extends Plugin {
         return;
       }
 
-      let startWordIndex = this.pdf.findStartWordIndexFromPdfSelection(
+      const selectionLookup = this.pdf.findStartWordIndexFromPdfSelection(
         fullText,
         selection,
         pageMap,
@@ -277,77 +277,15 @@ export default class DashReaderPlugin extends Plugin {
         selYInPage
       );
 
+      let startWordIndex = selectionLookup.index;
+
       if (startWordIndex === undefined) {
         // Step 1 DEVLOG instrumentation (console): selection anchor debug on failures.
-        try {
-          const matchKey = this.pdf.getMatchKeyForToken(selection);
-          const selectionTokens = this.pdf.tokenizeLikeEngine(selection);
-
-          const pageIdx = Math.max(0, (selPage | 0) - 1);
-          const pageText = pageMap?.pageTexts?.[pageIdx] ?? '';
-          const pageBase = pageMap?.pageWordStarts?.[pageIdx] ?? 0;
-
-          // Convert “no-break” hint to engine-token index within the page (includes '\n').
-          const noBreakToEngineIndex = (text: string, noBreakIdx: number): number => {
-            const toks = this.pdf.tokenizeLikeEngine(text);
-            let nb = 0;
-            const target = Math.max(0, noBreakIdx | 0);
-
-            for (let i = 0; i < toks.length; i++) {
-              const tok = toks[i];
-              if (!tok || tok === '\n') continue;
-              if (nb >= target) return i;
-              nb++;
-            }
-            return Math.max(0, toks.length - 1);
-          };
-
-          const wordsInPageNoBreaks = this.pdf.countTokensLikeEngineNoBreaks(pageText);
-
-          let preferredNoBreak: number | undefined =
-            (typeof selWordHintInPage === 'number' && Number.isFinite(selWordHintInPage))
-              ? Math.max(0, selWordHintInPage)
-              : undefined;
-
-          if (preferredNoBreak === undefined && typeof selYInPage === 'number' && Number.isFinite(selYInPage)) {
-            preferredNoBreak = Math.max(0, Math.min(wordsInPageNoBreaks - 1, Math.round(wordsInPageNoBreaks * selYInPage)));
-          }
-
-          const preferredEngineInPage =
-            preferredNoBreak === undefined ? undefined : noBreakToEngineIndex(pageText, preferredNoBreak);
-
-          const inPageCandidates = this.pdf.findCandidateMatchIndicesInText(
-            pageText,
-            selection,
-            preferredEngineInPage,
-            5
-          );
-
-          const candidates = inPageCandidates.map((inPageIdx2) => {
-            const globalIdx = pageBase + inPageIdx2;
-            const dbg = this.pdf.getEngineTokenWindow(fullText, globalIdx, 4);
-            return {
-              inPageIndex: inPageIdx2,
-              globalIndex: globalIdx,
-              tokenAt: dbg.tokenAt,
-              window: dbg.window,
-            };
-          });
-
-          console.debug('[DashReader][pdf-anchor-miss]', {
-            selectionRaw,
-            selectionClamped: selection,
-            selectionTokens,
-            normMatchKey: matchKey,
-            page: selPage,
-            wordHintInPage: selWordHintInPage,
-            yInPage: selYInPage,
-            probe: selProbe,
-            topCandidatesOnPage: candidates,
-          });
-        } catch (e) {
-          console.debug('[DashReader][pdf-anchor-miss] (debug-build failed)', e);
-        }
+        console.info('[DashReader][pdf-anchor-miss]', {
+          selectionRaw,
+          selectionClamped: selection,
+          diagnostics: selectionLookup.diagnostics,
+        });
 
         if (inHeaderFooterBand) {
           new Notice(
@@ -377,6 +315,9 @@ export default class DashReaderPlugin extends Plugin {
         } catch {}
         new Notice('Selected word could not be aligned in the extracted token stream');
         return;
+      }
+      if (aligned !== startWordIndex) {
+        selectionLookup.diagnostics.chosenReason = `${selectionLookup.diagnostics.chosenReason ?? 'match'} -> aligned-nearby`;
       }
       startWordIndex = aligned;
 
@@ -408,6 +349,7 @@ export default class DashReaderPlugin extends Plugin {
           }
 
           if (best !== undefined) {
+            selectionLookup.diagnostics.chosenReason = `${selectionLookup.diagnostics.chosenReason ?? 'match'} -> snapped-nearby`;
             startWordIndex = best;
           } else {
             new Notice('Selected word could not be aligned in the extracted token stream');
@@ -416,15 +358,26 @@ export default class DashReaderPlugin extends Plugin {
         }
       }
 
-      if (DEBUG_PDF_SELECTION) {
-        const dbg = this.pdf.getEngineTokenWindow(fullText, startWordIndex, 3);
-        console.debug('[DashReader][pdf-start]', {
-          selection,
-          startWordIndex,
-          tokenAt: dbg.tokenAt,
-          window: dbg.window,
-        });
-      }
+      selectionLookup.diagnostics.chosenIndex = startWordIndex;
+
+      const dbg = this.pdf.getEngineTokenWindow(fullText, startWordIndex, 20);
+
+      console.info('[DashReader][pdf-launch]', {
+        selectionRaw,
+        selectionNormalized: selection,
+        selectionMatchKey: selectionLookup.diagnostics.selectionMatchKey,
+        selectionTokens: this.pdf.tokenizeLikeEngine(selection),
+        page: selPage,
+        wordHintInPage: selWordHintInPage,
+        yInPage: selYInPage,
+        probe: selProbe,
+        tokenWindow: dbg,
+        candidates: selectionLookup.diagnostics.candidates,
+        preferredEngineIndex: selectionLookup.diagnostics.preferredEngineIndex,
+        preferredSource: selectionLookup.diagnostics.preferredSource,
+        chosenIndex: selectionLookup.diagnostics.chosenIndex,
+        chosenReason: selectionLookup.diagnostics.chosenReason,
+      });
 
       const modal = this.openModal({ skipInitialAutoLoad: true });
 
