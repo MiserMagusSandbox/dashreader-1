@@ -155,7 +155,14 @@ private _saveSettingsTimer: number | null = null;
   private breadcrumbEl: HTMLElement;
 
   private isInitialized = false;
-  private pendingLoad: { text: string; source?: { fileName?: string; lineNumber?: number; cursorPosition?: number } } | null = null;
+
+  private pendingLoad:
+    | {
+        text: string;
+        isPlain?: boolean;
+        source?: { fileName?: string; lineNumber?: number; cursorPosition?: number };
+      }
+    | null = null;
 
   private skipInitialAutoLoad = false;
 
@@ -378,19 +385,22 @@ private _saveSettingsTimer: number | null = null;
       // show the welcome message after a short grace period.
       this.timeoutManager.setTimeout(() => {
         if (this.engine.getTotalWords() === 0) {
+          const paletteHotkey = Platform.isMacOS ? 'Cmd+P' : 'Ctrl+P';
           this.wordDisplay.displayWelcomeMessage(
-            ICONS.book,
+            ICONS.file,
             'Select text to start reading',
-            'or use Cmd+P → "Read selected text"'
+            `or use ${paletteHotkey} → "Read selected text"`
           );
         }
       }, 500);
     });
     this.isInitialized = true;
     if (this.pendingLoad) {
-      const { text, source } = this.pendingLoad;
+      const { text, source, isPlain } = this.pendingLoad;
       this.pendingLoad = null;
-      this.loadText(text, source);
+
+      if (isPlain) this.loadPlainText(text, source);
+      else this.loadText(text, source);
     }
   }
 
@@ -2048,6 +2058,78 @@ private _saveSettingsTimer: number | null = null;
     }, this.settings.autoStartDelay * 1000);
   }
 
+  private loadPreparedText(
+    plainText: string,
+    wordIndexFromCursor: number | undefined,
+    source?: { fileName?: string; lineNumber?: number; cursorPosition?: number }
+  ): void {
+    if (!this.isInitialized) {
+      // Queue as plain load so we don't re-parse later
+      this.pendingLoad = { text: plainText, source, isPlain: true };
+      this.skipInitialAutoLoad = true;
+      return;
+    }
+
+    // Always reset session state before loading new text/index (playing OR paused)
+    this.engine.stop();
+    updatePlayPauseButtons(this.dom, false);
+
+    // After stopping/loading (paused state), allow context panels to be scrollable
+    this.setContextScrollEnabled(true);
+
+    // Reset breadcrumb context for new text
+    this.breadcrumbManager.reset();
+
+    // Verify text length
+    if (!plainText || plainText.trim().length < TEXT_LIMITS.minParsedLength) {
+      return;
+    }
+
+    // Load text into engine
+    this.engine.setText(plainText, undefined, wordIndexFromCursor);
+    this.state.update({ wordsRead: 0, startTime: 0 });
+
+    this.sessionStartIndex = this.getContextAnchorIndex();
+    this.sessionTotalTokens = Math.max(1, this.engine.getTotalWords() - this.sessionStartIndex);
+    this.sessionTotalDurationSec = this.engine.getEstimatedDuration();
+
+    // Remove welcome message
+    const welcomeMsg = this.wordEl.querySelector(`.${CSS_CLASSES.welcome}`);
+    if (welcomeMsg) welcomeMsg.remove();
+
+    if (this.wordDisplay) this.wordDisplay.clear();
+    else this.wordEl.empty();
+
+    // Update stats and display ready message
+    this.updateStatsDisplay(wordIndexFromCursor, source);
+
+    // Build and display initial breadcrumb
+    this.buildInitialBreadcrumb(wordIndexFromCursor ?? 0);
+
+    // Context should only appear after text is loaded.
+    this.toggleContextDisplay();
+    if (this.getActiveShowContext()) {
+      this.scheduleContextUpdate(this.getContextAnchorIndex());
+    }
+
+    // Auto-start reading if enabled
+    this.handleAutoStart();
+  }
+
+  public loadPlainText(
+    plainText: string,
+    source?: { fileName?: string; lineNumber?: number; cursorPosition?: number }
+  ): void {
+    if (!this.isInitialized) {
+      this.pendingLoad = { text: plainText, source, isPlain: true };
+      this.skipInitialAutoLoad = true;
+      return;
+    }
+
+    const startWordIndex = typeof source?.cursorPosition === 'number' ? source.cursorPosition : undefined;
+    this.loadPreparedText(plainText, startWordIndex, source);
+  }
+
   /**
    * Loads text for reading
    *
@@ -2068,7 +2150,7 @@ private _saveSettingsTimer: number | null = null;
     source?: { fileName?: string; lineNumber?: number; cursorPosition?: number }
   ): void {
     if (!this.isInitialized) {
-      this.pendingLoad = { text, source };
+      this.pendingLoad = { text, source, isPlain: false };
       this.skipInitialAutoLoad = true;
       return;
     }
@@ -2095,42 +2177,7 @@ private _saveSettingsTimer: number | null = null;
       source?.cursorPosition
     );
 
-    // Verify text length
-    if (!plainText || plainText.trim().length < TEXT_LIMITS.minParsedLength) {
-      return;
-    }
-
-    // Load text into engine
-    this.engine.setText(plainText, undefined, wordIndexFromCursor);
-    this.state.update({ wordsRead: 0, startTime: 0 });
-
-    this.sessionStartIndex = this.getContextAnchorIndex();
-    this.sessionTotalTokens = Math.max(1, this.engine.getTotalWords() - this.sessionStartIndex);
-    this.sessionTotalDurationSec = this.engine.getEstimatedDuration(); // same source as welcome
-
-    // Remove welcome message
-    const welcomeMsg = this.wordEl.querySelector(`.${CSS_CLASSES.welcome}`);
-    if (welcomeMsg) {
-      welcomeMsg.remove();
-    }
-
-    if (this.wordDisplay) this.wordDisplay.clear();
-    else this.wordEl.empty();
-
-    // Update stats and display ready message
-    this.updateStatsDisplay(wordIndexFromCursor, source);
-
-    // Build and display initial breadcrumb
-    this.buildInitialBreadcrumb(wordIndexFromCursor ?? 0);
-
-    // Context should only appear after text is loaded.
-    this.toggleContextDisplay();
-    if (this.getActiveShowContext()) {
-      this.scheduleContextUpdate(this.getContextAnchorIndex());
-    }
-
-    // Auto-start reading if enabled
-    this.handleAutoStart();
+    this.loadPreparedText(plainText, wordIndexFromCursor, source);
   }
 
   // ============================================================================

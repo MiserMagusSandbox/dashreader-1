@@ -2,6 +2,13 @@ import { App, PluginSettingTab, Setting } from 'obsidian';
 import DashReaderPlugin from '../main';
 import { getInstalledFontFamilies } from './services/font-family';
 
+function cssQuoteFont(name: string): string {
+  const t = name.trim();
+  if (!t) return t;
+  if (/^["'].*["']$/.test(t)) return t;
+  return /\s/.test(t) ? `"${t.replace(/"/g, '\\"')}"` : t;
+}
+
 class FontFamilySuggest {
   private suggestEl: HTMLDivElement;
   private isOpen = false;
@@ -9,7 +16,15 @@ class FontFamilySuggest {
   private filtered: string[] = [];
   private selectedIndex = -1;
 
-  private onDocMouseDown = (evt: MouseEvent) => {
+  private ignoreBlurUntil = 0;
+  private markIgnoreBlur(ms = 500): void {
+    this.ignoreBlurUntil = Date.now() + ms;
+  }
+  private shouldIgnoreBlur(): boolean {
+    return Date.now() < this.ignoreBlurUntil;
+  }
+
+  private onDocPointerDown = (evt: PointerEvent) => {
     const t = evt.target as Node | null;
     if (!t) return;
     if (t === this.inputEl || this.inputEl.contains(t)) return;
@@ -29,39 +44,42 @@ class FontFamilySuggest {
     });
     this.suggestEl.style.display = "none";
 
-    // Open on single click + keep typing working
-    this.inputEl.addEventListener("focus", () => this.open());
-    this.inputEl.addEventListener("mousedown", () => {
-      // ensures first click opens even before any typing
-      if (!this.isOpen) queueMicrotask(() => this.open());
+    // Mobile + desktop: open full list on focus/tap
+    this.inputEl.addEventListener("focus", () => this.open("all"));
+    this.inputEl.addEventListener("pointerdown", () => {
+      // ensures tap opens even if already focused (mobile)
+      if (!this.isOpen) queueMicrotask(() => this.open("all"));
     });
 
-    this.inputEl.addEventListener("input", () => this.open());
+    // Keep search narrowing when the user types
+    this.inputEl.addEventListener("input", () => this.open("filter"));
 
     // Keyboard navigation
     this.inputEl.addEventListener("keydown", (e) => this.onKeydown(e));
 
-    // Close when leaving the input (but allow click selection)
+    // Close when leaving the input (touch-safe: don't rely on :hover)
     this.inputEl.addEventListener("blur", () => {
       window.setTimeout(() => {
-        if (!this.suggestEl.matches(":hover")) this.close();
+        if (this.shouldIgnoreBlur()) return;
+        this.close();
       }, 120);
     });
 
-    // Prevent blur on click inside dropdown
-    this.suggestEl.addEventListener("mousedown", (e) => e.preventDefault());
+    // If user taps/scrolls inside dropdown, don't let blur-close win
+    this.suggestEl.addEventListener("pointerdown", () => this.markIgnoreBlur(700));
   }
 
   destroy(): void {
     this.close();
     this.suggestEl.remove();
-    document.removeEventListener("mousedown", this.onDocMouseDown);
+    document.removeEventListener("pointerdown", this.onDocPointerDown);
     window.removeEventListener("resize", this.onWinResize);
   }
 
-  private open(): void {
+  private open(mode: "all" | "filter"): void {
     this.items = this.getItems();
-    this.filterAndRender();
+    this.filterAndRender(mode);
+
     if (!this.filtered.length) {
       this.close();
       return;
@@ -70,11 +88,12 @@ class FontFamilySuggest {
     if (!this.isOpen) {
       this.isOpen = true;
       this.suggestEl.style.display = "block";
-      document.addEventListener("mousedown", this.onDocMouseDown);
+      document.addEventListener("pointerdown", this.onDocPointerDown);
       window.addEventListener("resize", this.onWinResize);
     }
 
     this.position();
+    this.refreshSelection();
   }
 
   private close(): void {
@@ -82,7 +101,7 @@ class FontFamilySuggest {
     this.isOpen = false;
     this.suggestEl.style.display = "none";
     this.suggestEl.empty();
-    document.removeEventListener("mousedown", this.onDocMouseDown);
+    document.removeEventListener("pointerdown", this.onDocPointerDown);
     window.removeEventListener("resize", this.onWinResize);
   }
 
@@ -112,17 +131,28 @@ class FontFamilySuggest {
     }
   }
 
-  private filterAndRender(): void {
-    const q = this.inputEl.value.trim().toLowerCase();
+  private currentSelectionKey(): string {
+    // Compare against the first family name, unquoted, lowercased.
+    const raw = (this.inputEl.value.split(",")[0] ?? "").trim();
+    const unquoted = raw.replace(/^["']|["']$/g, "");
+    return unquoted.toLowerCase();
+  }
+
+  private filterAndRender(mode: "all" | "filter"): void {
+    const q = mode === "all" ? "" : this.inputEl.value.trim().toLowerCase();
     const all = this.items;
 
-    const filtered = q
-      ? all.filter((f) => f.toLowerCase().includes(q))
-      : all;
+    const filtered = q ? all.filter((f) => f.toLowerCase().includes(q)) : all;
 
     // Cap to keep UI snappy with huge font lists
     this.filtered = filtered.slice(0, 400);
-    this.selectedIndex = this.filtered.length ? 0 : -1;
+
+    const selKey = this.currentSelectionKey();
+    const exactIdx = selKey
+      ? this.filtered.findIndex((f) => f.toLowerCase() === selKey)
+      : -1;
+
+    this.selectedIndex = exactIdx >= 0 ? exactIdx : (this.filtered.length ? 0 : -1);
 
     this.render();
   }
@@ -131,15 +161,26 @@ class FontFamilySuggest {
     this.suggestEl.empty();
 
     if (!this.filtered.length) {
-      this.suggestEl.createDiv({ cls: "dashreader-font-suggest-empty", text: "No matches" });
+      this.suggestEl.createDiv({
+        cls: "dashreader-font-suggest-empty",
+        text: "No matches",
+      });
       return;
     }
+
+    // Optional preview: keep it cheap on mobile by limiting when list is large
+    const enablePreview = this.filtered.length <= 120;
+    const fallback = getComputedStyle(this.inputEl).fontFamily;
 
     this.filtered.forEach((font, idx) => {
       const item = this.suggestEl.createDiv({
         cls: "dashreader-font-suggest-item",
         text: font,
       });
+
+      if (enablePreview) {
+        item.style.fontFamily = `${cssQuoteFont(font)}, ${fallback}`;
+      }
 
       if (idx === this.selectedIndex) item.classList.add("is-selected");
 
@@ -168,7 +209,7 @@ class FontFamilySuggest {
 
   private onKeydown(e: KeyboardEvent): void {
     if (!this.isOpen && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
-      this.open();
+      this.open("all");
       e.preventDefault();
       return;
     }
@@ -430,11 +471,20 @@ export class DashReaderSettingTab extends PluginSettingTab {
       const fonts = await getInstalledFontFamilies();
 
       // Only real installed fonts; de-dupe is already handled in getInstalledFontFamilies()
-      // Also remove anything weirdly empty.
       installedFonts = fonts.map((f) => f.trim()).filter(Boolean);
 
-      // If the user focuses before fonts load, refresh suggestions once loaded
-      // (open() re-reads getItems())
+      // Mobile often can't enumerate installed families; provide a sane fallback list
+      if (installedFonts.length === 0) {
+        installedFonts = [
+          "system-ui",
+          "ui-sans-serif",
+          "ui-serif",
+          "ui-monospace",
+          "sans-serif",
+          "serif",
+          "monospace",
+        ];
+      }
     })();
 
     // Section: Reading Enhancements

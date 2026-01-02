@@ -69,21 +69,26 @@ export class BreadcrumbManager {
   updateBreadcrumb(context: HeadingContext): void {
     const hasAnyHeadings = this.engine.getHeadings().length > 0;
 
-    if (!hasAnyHeadings) {
-      this.breadcrumbEl.toggleClass(CSS_CLASSES.hidden, true);
-      return;
-    }
-
-    this.breadcrumbEl.toggleClass(CSS_CLASSES.hidden, false);
     this.breadcrumbEl.empty();
 
     // Lucide icon (no emoji)
     const docIcon = this.breadcrumbEl.createSpan({ cls: "dashreader-breadcrumb-icon" });
     setIcon(docIcon, "file-text");
-    docIcon.addEventListener("click", () => this.showOutlineMenu(docIcon));
+    if (hasAnyHeadings) {
+      docIcon.addEventListener("click", () => this.showOutlineMenu(docIcon));
+    }
 
     // NEW: wrapper that will shrink (ellipsis) while icons stay visible
     const pathEl = this.breadcrumbEl.createSpan({ cls: "dashreader-breadcrumb-path" });
+
+    // PDF / plain-text docs have no headings: keep the bar stable with a placeholder.
+    if (!hasAnyHeadings) {
+      pathEl.createSpan({
+        text: "Document",
+        cls: "dashreader-breadcrumb-item dashreader-breadcrumb-item--last"
+      });
+      return;
+    }
 
     // If we’re before the first heading, show a placeholder instead of hiding
     if (!context || context.breadcrumb.length === 0) {

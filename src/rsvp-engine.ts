@@ -3,6 +3,30 @@ import { TimeoutManager } from './services/timeout-manager';
 import { MicropauseService } from './services/micropause-service';
 type HistoryEntry = { index: number; tMs: number };
 
+export const ENGINE_LINEBREAK_MARKER = '§§LINEBREAK§§';
+
+/**
+ * Tokenize exactly like RSVPEngine.setText() ultimately stores tokens
+ * (including '\n' tokens).
+ *
+ * Exported so PDF code can index into the exact same token stream without
+ * touching Markdown pathways.
+ */
+export function cleanTextForEngine(text: string): string {
+  // Keep this logic byte-for-byte equivalent to RSVPEngine.setText().
+  return String(text ?? '')
+    .replace(/\n+/g, ` ${ENGINE_LINEBREAK_MARKER} `)
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+}
+
+export function tokenizeForEngine(text: string): string[] {
+  // Keep empty-string behavior identical to RSVPEngine.setText()
+  // (''.split(/\s+/) => ['']).
+  const cleaned = cleanTextForEngine(text);
+  return cleaned.split(/\s+/).map((w) => (w === ENGINE_LINEBREAK_MARKER ? '\n' : w));
+}
+
 export class RSVPEngine {
   private words: string[] = [];
   private currentIndex: number = 0;

@@ -439,11 +439,14 @@ export class WordDisplay {
   displayWelcomeMessage(icon: string, mainText: string, subText: string): void {
     this.contentEl.empty();
     this.wordEl.setAttribute('data-running', 'false');
+
     const welcomeDiv = this.contentEl.createDiv({ cls: 'dashreader-welcome-message' });
-    welcomeDiv.createDiv({
-      text: `${icon} ${mainText}`,
-      cls: 'dashreader-welcome-icon'
-    });
+
+    const header = welcomeDiv.createDiv({ cls: 'dashreader-welcome-icon' });
+    const iconSpan = header.createSpan({ cls: 'dashreader-inline-icon' });
+    this.renderIcon(iconSpan, icon);
+    header.createSpan({ text: ` ${mainText}` });
+
     welcomeDiv.createDiv({
       text: subText,
       cls: 'dashreader-welcome-instruction'
