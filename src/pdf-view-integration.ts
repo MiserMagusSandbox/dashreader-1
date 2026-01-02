@@ -11,6 +11,32 @@ export type PdfPageMap = {
   pageWordStarts: number[];
 };
 
+type PdfAnchorCandidate = {
+  globalIndex: number;
+  inPageIndex?: number;
+  token: string;
+  matchKey: string;
+  distanceToPreferred?: number;
+  contextScore?: number;
+};
+
+type PdfLaunchDiagnostics = {
+  selectionNormalized: string;
+  selectionMatchKey: string;
+  selectionPage?: number;
+  selectionWordHintInPage?: number;
+  selectionYInPage?: number;
+  selectionProbe?: string;
+  selectionContextKeys?: string[];
+  preferredEngineIndex?: number;
+  preferredSource?: string;
+  pageWordCount?: number;
+  pageEngineBase?: number;
+  candidates: PdfAnchorCandidate[];
+  chosenIndex?: number;
+  chosenReason?: string;
+};
+
 export class PdfViewIntegration {
   private lastPdfSelectionText = '';
 
@@ -56,73 +82,27 @@ export class PdfViewIntegration {
     }
   }
 
-  private normalizePdfTokenForMatch(t: string): string {
-    let s = String(t ?? '');
-
-    s = s.replace(/^\[(?:H\d+|CALLOUT:[^\]]+)\]/i, '');
-
-    // Normalize plus/minus variants early
-    s = s
-      .replace(/[＋﹢⁺]/g, '+')
-      .replace(/[−﹣－⁻]/g, '-')
-      .replace(/[‐-‒–—−]/g, '-');
-
-    // PUA fixes (must match PdfParser.cleanupLineText)
-    s = s
-      .replace(/[\uE004\uE053\uE0AE]/g, 'ff')
-      .replace(/[\uE007]/g, 'ffi')
-      .replace(/[\uE054\uE0B1]/g, 'ffi')
-      .replace(/[\uE005\uE04A\uE04C\uE04D\uE055\uE0AF]/g, 'fi')
-      .replace(/\uE006/g, '/')
-      .replace(/\uE036/g, '≠')
-      .replace(/\uE068/g, '⟨')
-      .replace(/\uE069/g, '⟩')
-      .replace(/\uE000/g, 'Δ');
-
-    try { s = s.normalize('NFKD'); } catch {}
-    try { s = s.replace(/\p{M}+/gu, ''); } catch {}
-
-    s = s
-      .replace(/ﬀ/g, 'ff')
-      .replace(/ﬁ/g, 'fi')
-      .replace(/ﬂ/g, 'fl')
-      .replace(/ﬃ/g, 'ffi')
-      .replace(/ﬄ/g, 'ffl')
-      .replace(/[“”‘’]/g, "'")
-      .toLowerCase();
-
-    // Normalize plus/minus cluster variants to a stable token (CD16+/− etc)
-    s = s
-      .replace(/±/g, 'plusminus')
-      .replace(/\+\/[−-]/g, 'plusminus')
-      .replace(/\+[-−]/g, 'plusminus');
-
-    // Remove bracket chars anywhere (required for (CCL)-3 / (ADP)-ribose / etc)
-    s = s.replace(/[()\[\]{}（［｛）］｝]/g, '');
-
-    // Preserve biochemical charge suffixes: NAD+ -> nadplus, Cl- -> clminus
-    if (s.endsWith('+') && /[a-z0-9]$/.test(s.slice(0, -1))) s = s.slice(0, -1) + 'plus';
-    else if (s.endsWith('-') && /[a-z0-9]$/.test(s.slice(0, -1))) s = s.slice(0, -1) + 'minus';
-
-    // Keep standalone +/- (rare but possible)
-    if (s === '+') return 'plus';
-    if (s === '-') return 'minus';
-
-    try {
-      s = s.replace(/^[^\p{L}\p{N}]+/gu, '').replace(/[^\p{L}\p{N}]+$/gu, '');
-    } catch {
-      s = s.replace(/^[^a-z0-9]+/gi, '').replace(/[^a-z0-9]+$/gi, '');
-    }
-
-    return s;
-  }
-
   private stripChargeSuffixKey(key: string): string {
     if (!key) return key;
     if (key.endsWith('plusminus')) return key.slice(0, -8);
     if (key.endsWith('plus')) return key.slice(0, -4);
     if (key.endsWith('minus')) return key.slice(0, -5);
     return key;
+  }
+
+  private stripSuperscriptSuffixKey(tokKey: string, rawTok: string): string | undefined {
+    if (!tokKey) return undefined;
+    const m = tokKey.match(/(plusminus|plus|minus|dim|dimm|bright|neg|pos|\d{1,3})$/);
+    if (!m) return undefined;
+    const base = tokKey.slice(0, -m[1].length);
+    if (!base) return undefined;
+
+    const supRange = /[\u2070-\u209F]/;
+    const rawHasSup = supRange.test(rawTok) || /\^/.test(rawTok);
+    const looksSupSuffix = rawHasSup || m[1].length <= 3;
+    if (!looksSupSuffix) return undefined;
+
+    return base;
   }
 
   private isLikelyAcronymFragment(raw: string): boolean {
@@ -140,6 +120,9 @@ export class PdfViewIntegration {
 
     if (/^CD\d/i.test(core)) return true;
 
+    // Handle Greek letters mixed with caps/digits (e.g. FcγRIIa/b)
+    if (/[Α-Ωα-ω]/.test(core) && (/[A-Z]/.test(core) || /\d/.test(core))) return true;
+
     const upper = (core.match(/[A-Z]/g) ?? []).length;
     const lower = (core.match(/[a-z]/g) ?? []).length;
     const hasDigit = /\d/.test(core);
@@ -152,6 +135,57 @@ export class PdfViewIntegration {
     return false;
   }
 
+  private isAmbiguousAcronymSelection(selection: string, matchKey: string): boolean {
+    const raw = String(selection ?? '').trim();
+    if (!raw || !matchKey) return false;
+
+    if (this.isLikelyAcronymFragment(raw)) return true;
+
+    // Very short all-caps/digit tokens are ambiguous even if not caught above.
+    if (/^[A-Z\d]{2,6}$/.test(raw)) return true;
+    if (/^[a-z\d]{2,4}$/.test(matchKey) && /^[A-Z]/.test(raw)) return true;
+
+    return false;
+  }
+
+  private getTokenKeyAtOffset(tokens: string[], startIndex: number, offset: number): string | undefined {
+    if (!Number.isFinite(startIndex) || offset === 0) return undefined;
+    const norm = (t: string) => PdfParser.normalizePdfTokenForMatch(t);
+    const dir = offset > 0 ? 1 : -1;
+    let remaining = Math.abs(offset);
+    let idx = startIndex;
+    while (idx >= 0 && idx < tokens.length) {
+      idx += dir;
+      if (idx < 0 || idx >= tokens.length) break;
+      const tok = tokens[idx];
+      if (!tok || tok === PdfParser.LINEBREAK_MARKER) continue;
+      const key = norm(tok);
+      if (!key) continue;
+      remaining -= 1;
+      if (remaining === 0) return key;
+    }
+    return undefined;
+  }
+
+  private captureContextTokens(
+    tokens: string[],
+    anchorIndex: number | undefined,
+    max = 3
+  ): { offset: number; key: string }[] {
+    if (!Number.isFinite(anchorIndex)) return [];
+    const captured: { offset: number; key: string }[] = [];
+    // Prefer right-context first (offsets +1, +2, ...), then left.
+    for (let step = 1; step <= tokens.length && captured.length < max; step++) {
+      const key = this.getTokenKeyAtOffset(tokens, anchorIndex as number, step);
+      if (key) captured.push({ offset: step, key });
+    }
+    for (let step = 1; step <= tokens.length && captured.length < max; step++) {
+      const key = this.getTokenKeyAtOffset(tokens, anchorIndex as number, -step);
+      if (key) captured.push({ offset: -step, key });
+    }
+    return captured.slice(0, max);
+  }
+
   private tokenMatchesSelectionKey(token: string, selectionKey: string): boolean {
     const sel = String(selectionKey ?? '').trim();
     if (!sel) return false;
@@ -159,7 +193,7 @@ export class PdfViewIntegration {
     const rawTok = String(token ?? '').trim();
     if (!rawTok || rawTok === PdfParser.LINEBREAK_MARKER) return false;
 
-    const tokKey = this.normalizePdfTokenForMatch(rawTok);
+    const tokKey = PdfParser.normalizePdfTokenForMatch(rawTok);
     if (!tokKey) return false;
 
     if (tokKey === sel) return true;
@@ -167,6 +201,12 @@ export class PdfViewIntegration {
     // Allow selection without charge suffix: CD38 vs CD38plus, HLA-DR vs HLA-DRminus
     const tokNoCharge = this.stripChargeSuffixKey(tokKey);
     if (tokNoCharge && tokNoCharge === sel) return true;
+
+    // Allow selecting the base when superscript/subscript suffixes are glued to the token
+    const supBase = this.stripSuperscriptSuffixKey(tokNoCharge, rawTok) ?? this.stripSuperscriptSuffixKey(tokKey, rawTok);
+    const supBaseNoCharge = supBase ? this.stripChargeSuffixKey(supBase) : undefined;
+    if (supBase && supBase === sel) return true;
+    if (supBaseNoCharge && supBaseNoCharge === sel) return true;
 
     // Allow selecting just the acronym part for common suffix patterns:
     // CCL vs CCL-3, IP3 vs IP3-independent, TAM vs TAM-mediated
@@ -195,7 +235,7 @@ export class PdfViewIntegration {
       const parts = core.split(/[\/\\]/).filter(Boolean);
       if (parts.length >= 2) {
         for (const p of parts) {
-          const k = this.normalizePdfTokenForMatch(p);
+          const k = PdfParser.normalizePdfTokenForMatch(p);
           if (k && (k === sel || this.stripChargeSuffixKey(k) === sel)) return true;
         }
       }
@@ -209,7 +249,7 @@ export class PdfViewIntegration {
         .replace(/[\)\]\}）］｝]+$/, '');
       const first = core.split(/[‐-‒–—−]/)[0] ?? '';
       if (first && first !== core && this.isLikelyAcronymFragment(first)) {
-        const k = this.normalizePdfTokenForMatch(first);
+        const k = PdfParser.normalizePdfTokenForMatch(first);
         if (k === sel) return true;
       }
     }
@@ -219,7 +259,7 @@ export class PdfViewIntegration {
 
   // Used by main.ts hard-guard / debug paths
   public tokenMatchesSelectionToken(token: string, selectionToken: string): boolean {
-    const selKey = this.normalizePdfTokenForMatch(String(selectionToken ?? '').trim());
+    const selKey = PdfParser.normalizePdfTokenForMatch(String(selectionToken ?? '').trim());
     if (!selKey) return false;
     return this.tokenMatchesSelectionKey(token, selKey);
   }
@@ -372,182 +412,7 @@ export class PdfViewIntegration {
    * This helper strips common trailing markers so double-clicking a word behaves as expected.
    */
   public normalizeSingleWordSelection(selection: string): string {
-    const raw = String(selection ?? '').trim();
-    if (!raw) return '';
-
-    // normalize “PDF weird whitespace”
-    const norm = raw.replace(/[\s\u00A0\u2000-\u200A\u200B\u202F\u205F\u2060\u3000\uFEFF]+/g, ' ').trim();
-    if (!norm) return '';
-
-    // Tokenize with the SAME tokenizer the engine uses (whitespace-only)
-    const toks = PdfParser.tokenizeLikeEngine(norm).filter((t) => t && t !== PdfParser.LINEBREAK_MARKER);
-    if (!toks.length) return '';
-
-    const hasLetter = (s: string): boolean => {
-      try {
-        return /[\p{L}]/u.test(s);
-      } catch {
-        return /[A-Za-z]/.test(s);
-      }
-    };
-
-    const hasAlphaNumChar = (s: string): boolean => {
-      try {
-        return /[\p{L}\p{N}]/u.test(s);
-      } catch {
-        return /[A-Za-z0-9]/.test(s);
-      }
-    };
-
-    const isWordish = (w: string): boolean => hasAlphaNumChar(String(w ?? ''));
-
-    const isPlainWord = (w: string): boolean => {
-      const s = String(w ?? '');
-      try {
-        return /^[\p{L}]+$/u.test(s);
-      } catch {
-        return /^[A-Za-z]+$/.test(s);
-      }
-    };
-
-    // IMPORTANT: preserve brackets/parentheses in the clamped selection.
-    // Matching may normalize them away later, but the command path should not silently drop them.
-    const stripWrapperPunct = (w: string): string => {
-      let s = String(w ?? '').trim();
-      if (!s) return '';
-
-      // Remove a single leading quote.
-      s = s.replace(/^[«“‘'"]+/, '');
-
-      // Remove trailing sentence punctuation / quotes (but NOT brackets/parentheses).
-      s = s.replace(/[»”’'".,;:!?]+$/g, '');
-
-      // If we removed everything, fall back to original.
-      return s || String(w ?? '').trim();
-    };
-
-    if (toks.length === 1) {
-      // Drift-free: for a single token, do NOT rewrite it into some sub-part.
-      const cleaned = stripWrapperPunct(toks[0]) || toks[0];
-      const one = String(cleaned ?? '').trim();
-      return one || String(toks[0] ?? '').trim();
-    }
-
-    // Charge-suffix repair: PDF.js sometimes splits "NAD+" into separate tokens like "NAD" "+".
-    // When that happens, preserve the biochemical charge marker so we can anchor in the extracted text.
-    {
-      const normCharge = (x: string): string =>
-        String(x ?? '')
-          .trim()
-          .replace(/[＋﹢⁺]/g, '+')
-          .replace(/[−﹣－⁻]/g, '-');
-
-      const isChargeOnly = (x: string): boolean => {
-        const t = normCharge(x);
-        return t === '+' || t === '-';
-      };
-
-      if (toks.length === 2 && isWordish(toks[0]) && isChargeOnly(toks[1])) {
-        const left = stripWrapperPunct(toks[0]);
-        const right = normCharge(toks[1]);
-        if (left && left.length >= 2) {
-          return `${left}${right}`;
-        }
-      }
-    }
-
-    // If multiple tokens, find tokens with actual alphanum content.
-    const alpha = toks.filter((t) => isWordish(t));
-
-    // If selection is mostly punctuation with exactly 1 real token, clamp to that.
-    if (alpha.length === 1) {
-      const cleaned = stripWrapperPunct(alpha[0]);
-      if (hasLetter(cleaned)) return cleaned;
-      return alpha[0];
-    }
-
-    // Merge hyphenated line splits: "multi-" + "modal" => "multi-modal"
-    if (
-      toks.length === 2 &&
-      /[\-\u2010\u2011\u2012\u2013\u2014\u2212]+$/.test(toks[0]) &&
-      isWordish(toks[1])
-    ) {
-      const left = toks[0].replace(/[\-\u2010\u2011\u2012\u2013\u2014\u2212]+$/, '');
-      const right = toks[1];
-      if (left && right) {
-        return `${left}-${right}`;
-      }
-    }
-
-    // If we have a small multi-token selection that is likely a “biomedical chain” (CD markers etc),
-    // choose a deterministic “best” anchor token (prefer digit/charge-bearing tokens; tie-break by “nearest end”).
-    if (toks.length >= 2 && toks.length <= 6) {
-      const scoreTok = (tok: string): number => {
-        if (this.isLikelyFootnoteMarkerToken(tok)) return -1;
-        const t = stripWrapperPunct(tok);
-        if (!t || !hasAlphaNumChar(t)) return -1;
-
-        const hasDigit = /[0-9]/.test(t) || /[¹²³\u2070-\u2079\u2080-\u2089]/.test(t);
-        const hasCharge = /[+\-−＋－⁺⁻﹢﹣]/.test(t);
-        const hasCaretOrSlash = /[\/\u2044\^]/.test(t);
-        const hasDash = /[\-\u2010\u2011\u2012\u2013\u2014\u2212]/.test(t);
-        const hasUpper = /[A-Z]/.test(t);
-
-        const bioPrefix = /^(CD|HLA|FC|IL|TNF|CCL|CXCL|NAD|ATP|ADP)/i.test(t);
-
-        let score = 0;
-        if (hasDigit) score += 4;
-        if (hasCharge) score += 4;
-        if (hasCaretOrSlash) score += 2;
-        if (hasDash) score += 1;
-        if (hasUpper) score += 1;
-        if (bioPrefix) score += 2;
-
-        return score;
-      };
-
-      let bestIdx = -1;
-      let bestScore = -1;
-      for (let i = 0; i < toks.length; i++) {
-        const sc = scoreTok(toks[i]);
-        if (sc > bestScore || (sc === bestScore && sc >= 0 && i > bestIdx)) {
-          bestScore = sc;
-          bestIdx = i;
-        }
-      }
-
-      if (bestIdx >= 0 && bestScore >= 1) {
-        const chosen = stripWrapperPunct(toks[bestIdx]);
-        if (chosen) return chosen;
-        return toks[bestIdx];
-      }
-    }
-
-    // Remove common trailing footnote markers (word (12) / word[12] / word¹² etc.)
-    if (toks.length > 1) {
-      const head = toks[0];
-      const rest = toks.slice(1);
-      const allIgnorable = rest.every((t) => this.isLikelyFootnoteMarkerToken(t));
-
-      if (allIgnorable && isWordish(head)) {
-        return stripWrapperPunct(head);
-      }
-    }
-
-    // Handle cases like "word(12)" or "word[12]" where the marker is attached.
-    if (toks.length === 1) {
-      const w = toks[0];
-      // Not used here (toks.length==1 handled above), but keep for safety.
-      return stripWrapperPunct(w);
-    }
-
-    // Handle cases like "word (12)" where the marker is separated as a second token.
-    if (toks.length === 2 && isWordish(toks[0]) && this.isLikelyFootnoteMarkerToken(toks[1])) {
-      return stripWrapperPunct(toks[0]);
-    }
-
-    // Keep the normalized selection as-is if we cannot safely clamp.
-    return norm;
+    return PdfParser.normalizeSingleWordSelection(selection);
   }
 
   private extractTokenAroundOffset(node: Node | null, offset: number): string | undefined {
@@ -665,21 +530,6 @@ export class PdfViewIntegration {
     }
 
     return undefined;
-  }
-
-  private isLikelyFootnoteMarkerToken(tok: string): boolean {
-    const t = String(tok ?? '').trim();
-    if (!t) return false;
-    if (/^\[[0-9]{1,4}\]$/.test(t)) return true;
-    if (/^\([0-9]{1,4}\)$/.test(t)) return true;
-    if (/^\{[0-9]{1,4}\}$/.test(t)) return true;
-    if (/^[*†‡§¶]+$/.test(t)) return true;
-    if (/^[¹²³\u2070-\u2079]+$/.test(t)) return true;
-    if (/^\d{1,2}$/.test(t)) {
-      const n = parseInt(t, 10);
-      return Number.isFinite(n) && n >= 1 && n <= 30;
-    }
-    return false;
   }
 
   private getParentElementCrossShadow(el: Element | null): Element | null {
@@ -1046,7 +896,7 @@ export class PdfViewIntegration {
         const toks = PdfParser.tokenizeLikeEngine(norm).filter((t) => t && t !== PdfParser.LINEBREAK_MARKER);
         if (!toks.length) return undefined;
         toks[0] = this.normalizeSingleWordSelection(toks[0]);
-        if (toks.length >= 2 && this.isLikelyFootnoteMarkerToken(toks[1])) toks.splice(1, 1);
+        if (toks.length >= 2 && PdfParser.isLikelyFootnoteMarkerToken(toks[1])) toks.splice(1, 1);
         return toks.slice(0, 16).join(' ');
       }
 
@@ -1138,7 +988,7 @@ export class PdfViewIntegration {
       if (!tokens.length) return undefined;
 
       tokens[0] = this.normalizeSingleWordSelection(tokens[0]);
-      if (tokens.length >= 2 && this.isLikelyFootnoteMarkerToken(tokens[1])) tokens.splice(1, 1);
+      if (tokens.length >= 2 && PdfParser.isLikelyFootnoteMarkerToken(tokens[1])) tokens.splice(1, 1);
 
       return tokens.slice(0, 16).join(' ');
     } catch {
@@ -1159,15 +1009,19 @@ export class PdfViewIntegration {
       if (!raw) return undefined;
 
       // normalize “PDF weird whitespace”
-      const norm = raw.replace(/[\s\u00A0\u2000-\u200A\u200B\u202F\u205F\u2060\u3000\uFEFF]+/g, ' ').trim();
-      if (!norm) return undefined;
+      const norm0 = raw.replace(/[\s\u00A0\u2000-\u200A\u200B\u202F\u205F\u2060\u3000\uFEFF]+/g, ' ').trim();
+      if (!norm0) return undefined;
+
+      // IMPORTANT: apply the same biomedical token splitting used during extraction and
+      // event-based probe building so chains (CD33+CD15, CD47/SIRP) split consistently.
+      const norm = PdfParser.insertBiomedicalTokenBreaks(norm0);
 
       const tokens = PdfParser.tokenizeLikeEngine(norm).filter((t) => t && t !== PdfParser.LINEBREAK_MARKER);
       if (!tokens.length) return undefined;
 
       tokens[0] = this.normalizeSingleWordSelection(tokens[0]);
 
-      if (tokens.length >= 2 && this.isLikelyFootnoteMarkerToken(tokens[1])) {
+      if (tokens.length >= 2 && PdfParser.isLikelyFootnoteMarkerToken(tokens[1])) {
         tokens.splice(1, 1);
       }
 
@@ -2298,22 +2152,40 @@ export class PdfViewIntegration {
     const pr = String(probe ?? '').trim();
     if (!sel || !pr) return '';
 
-    const target = this.normalizePdfTokenForMatch(sel);
+    const target = PdfParser.normalizePdfTokenForMatch(sel);
     if (!target) return '';
 
-    const toks = PdfParser.tokenizeLikeEngine(pr).filter((t) => t && t !== PdfParser.LINEBREAK_MARKER);
+    const isPunctOnly = (t: string): boolean => {
+      const txt = String(t ?? '').trim();
+      if (!txt) return true;
+      try {
+        return !/[\p{L}\p{N}]/u.test(txt);
+      } catch {
+        return !/[A-Za-z0-9]/.test(txt);
+      }
+    };
+
+    const findMatchIndex = (tokens: string[]): number => {
+      for (let i = 0; i < tokens.length; i++) {
+        if (this.tokenMatchesSelectionKey(tokens[i], target)) return i;
+      }
+      return -1;
+    };
+
+    let toks = PdfParser.tokenizeLikeEngine(pr).filter((t) => t && t !== PdfParser.LINEBREAK_MARKER);
     if (!toks.length) return '';
 
-    let idx = -1;
-    for (let i = 0; i < toks.length; i++) {
-      if (this.tokenMatchesSelectionKey(toks[i], target)) {
-        idx = i;
-        break;
-      }
+    let idx = findMatchIndex(toks);
+
+    // If the first attempt fails (or only hits punctuation glue), drop leading punctuation-only
+    // tokens so nested ")ADP)-" probes don't shift the anchor away from the real start.
+    if (idx < 0) {
+      while (toks.length && isPunctOnly(toks[0])) toks = toks.slice(1);
+      idx = findMatchIndex(toks);
     }
 
     if (idx < 0) return '';
-    if (idx === 0) return pr;
+    if (idx === 0) return toks.join(' ').trim();
 
     return toks.slice(idx).join(' ').trim();
   }
@@ -2321,10 +2193,18 @@ export class PdfViewIntegration {
   private findStartWordIndexFromSelection(
     fullText: string,
     selection: string,
-    preferredIndex?: number
+    preferredIndex?: number,
+    opts: { maxDistanceFromPreferred?: number } = {}
   ): number | undefined {
 
-    const normWord = (t: string) => this.normalizePdfTokenForMatch(t);
+    // This method is the last line of defence for “launch exactly where I clicked”.
+    // It intentionally reuses the RSVP engine tokenization so that every alignment
+    // decision maps directly onto what the reader displays. The matcher keeps
+    // single-token selections permissive (so CD38 vs CD38+ still works) and relies
+    // on the caller-provided preferredIndex to bias toward the clicked occurrence
+    // instead of the first duplicate elsewhere in the document.
+
+    const normWord = (t: string) => PdfParser.normalizePdfTokenForMatch(t);
 
     // Tokenize in the SAME token space the engine will use (includes LINEBREAK_MARKER).
     const hayTokensAll = PdfParser.tokenizeLikeEngine(fullText);
@@ -2355,7 +2235,16 @@ export class PdfViewIntegration {
       const preferEngine =
         typeof preferredIndex === 'number' && Number.isFinite(preferredIndex) ? preferredIndex : undefined;
 
+      const maxDist = (() => {
+        if (preferEngine === undefined) return undefined;
+        if (opts?.maxDistanceFromPreferred === undefined && targetKey.length > 1) return undefined;
+        const capFromCaller = opts?.maxDistanceFromPreferred;
+        const capForSingleChar = targetKey.length === 1 ? Math.max(80, Math.min(240, hayTokensAll.length)) : undefined;
+        return capFromCaller ?? capForSingleChar;
+      })();
+
       let best: number | undefined;
+      let bestWithinCap: number | undefined;
       let bestDist = Number.POSITIVE_INFINITY;
 
       for (let i = 0; i < hayTokensAll.length; i++) {
@@ -2369,15 +2258,25 @@ export class PdfViewIntegration {
         if (d < bestDist) {
           best = i;
           bestDist = d;
+          if (d === 0) bestWithinCap = i;
+        }
+
+        if (maxDist !== undefined && d <= maxDist) {
+          if (bestWithinCap === undefined || d < Math.abs(bestWithinCap - preferEngine)) {
+            bestWithinCap = i;
+          }
           if (d === 0) break;
         }
       }
-      return best;
+
+      return bestWithinCap ?? best;
     }
 
     const first = needle[0];
     const preferEngine =
       typeof preferredIndex === 'number' && Number.isFinite(preferredIndex) ? preferredIndex : undefined;
+
+    const maxDist = opts?.maxDistanceFromPreferred;
 
     // Convert preferredIndex from engine-token-space to filtered-token-space (hay[]).
     let preferFiltered: number | undefined = undefined;
@@ -2394,6 +2293,8 @@ export class PdfViewIntegration {
 
     let bestEngine: number | undefined = undefined;
     let bestDist = Number.POSITIVE_INFINITY;
+    let bestWithinCap: number | undefined = undefined;
+    let bestWithinCapDist = Number.POSITIVE_INFINITY;
 
     for (let i = 0; i <= hay.length - needle.length; i++) {
       if (hay[i] !== first) continue;
@@ -2416,11 +2317,19 @@ export class PdfViewIntegration {
       if (dist < bestDist) {
         bestEngine = engineIdx;
         bestDist = dist;
+        if (dist === 0) bestWithinCap = engineIdx;
+      }
+
+      if (maxDist !== undefined && dist <= maxDist) {
+        if (bestWithinCap === undefined || dist < bestWithinCapDist) {
+          bestWithinCap = engineIdx;
+          bestWithinCapDist = dist;
+        }
         if (dist === 0) break;
       }
     }
 
-    return bestEngine;
+    return bestWithinCap ?? bestEngine;
   }
 
   public alignStartWordIndexToSelection(
@@ -2428,9 +2337,10 @@ export class PdfViewIntegration {
     selection: string,
     startWordIndex: number,
     probe?: string,
-    lookAround = 80
+    lookAround = 80,
+    opts: { maxDistanceFromHint?: number } = {}
   ): number | undefined {
-    const normWord = (t: string) => this.normalizePdfTokenForMatch(t);
+    const normWord = (t: string) => PdfParser.normalizePdfTokenForMatch(t);
 
     const target = normWord(String(selection ?? '').trim());
     if (!target) return undefined;
@@ -2452,43 +2362,56 @@ export class PdfViewIntegration {
       : [];
 
     const useProbe = probeTokens.length >= 2;
+    const distCap = opts?.maxDistanceFromHint ?? (target.length === 1 ? Math.max(lookAround, 120) : undefined);
 
     let bestIdx: number | undefined = undefined;
     let bestScore = -1;
     let bestDist = Number.POSITIVE_INFINITY;
 
-    for (let i = start; i <= end; i++) {
-      const tok = tokens[i];
-      if (!tok || tok === PdfParser.LINEBREAK_MARKER) continue;
-      if (!this.tokenMatchesSelectionKey(tok, target)) continue;
+    const considerRange = (lo: number, hi: number) => {
+      for (let i = Math.max(0, lo); i <= Math.min(tokens.length - 1, hi); i++) {
+        const tok = tokens[i];
+        if (!tok || tok === PdfParser.LINEBREAK_MARKER) continue;
+        if (!this.tokenMatchesSelectionKey(tok, target)) continue;
 
-      let score = 1;
+        let score = 1;
 
-      if (useProbe) {
-        // score by how many subsequent probe tokens match starting at i
-        let matched = 0;
-        let j = i;
+        if (useProbe) {
+          // score by how many subsequent probe tokens match starting at i
+          let matched = 0;
+          let j = i;
 
-        for (let p = 0; p < probeTokens.length && j < tokens.length; p++) {
-          while (j < tokens.length && tokens[j] === PdfParser.LINEBREAK_MARKER) j++;
-          if (j >= tokens.length) break;
+          for (let p = 0; p < probeTokens.length && j < tokens.length; p++) {
+            while (j < tokens.length && tokens[j] === PdfParser.LINEBREAK_MARKER) j++;
+            if (j >= tokens.length) break;
 
-          if (normWord(tokens[j]) !== probeTokens[p]) break;
-          matched++;
-          j++;
+            if (normWord(tokens[j]) !== probeTokens[p]) break;
+            matched++;
+            j++;
+          }
+
+          score = 1 + matched;
         }
 
-        score = 1 + matched;
+        const dist = Math.abs(i - startWordIndex);
+        if (distCap !== undefined && dist > distCap) continue;
+        if (score > bestScore || (score === bestScore && dist < bestDist)) {
+          bestScore = score;
+          bestDist = dist;
+          bestIdx = i;
+          if (bestDist === 0 && bestScore > 1) return true;
+        }
       }
+      return false;
+    };
 
-      const dist = Math.abs(i - startWordIndex);
-      if (score > bestScore || (score === bestScore && dist < bestDist)) {
-        bestScore = score;
-        bestDist = dist;
-        bestIdx = i;
-        if (bestDist === 0 && bestScore > 1) break;
-      }
-    }
+    // First, search locally around the hint to keep the start anchor stable.
+    const hitLocal = considerRange(start, end);
+    if (hitLocal && bestIdx !== undefined) return bestIdx;
+
+    // If the local window fails (or hint is badly skewed), perform a full sweep
+    // to ensure the exact selection token can still be anchored with zero drift.
+    considerRange(0, tokens.length - 1);
 
     return bestIdx;
   }
@@ -2501,12 +2424,36 @@ export class PdfViewIntegration {
     selectionWordHintInPage?: number,
     selectionProbe?: string,
     selectionYInPage?: number
-  ): number | undefined {
+  ): { index: number | undefined; diagnostics: PdfLaunchDiagnostics } {
+    const matchKey = PdfParser.normalizePdfTokenForMatch(selection);
+    const tokensAll = PdfParser.tokenizeLikeEngine(fullText);
+    const ambiguousSelection = this.isAmbiguousAcronymSelection(selection, matchKey);
+
+    const diagnostics: PdfLaunchDiagnostics = {
+      selectionNormalized: selection,
+      selectionMatchKey: matchKey,
+      selectionPage,
+      selectionWordHintInPage,
+      selectionYInPage,
+      selectionProbe,
+      candidates: [],
+    };
+
     const probeRaw = String(selectionProbe ?? '').trim();
     const probeAligned = probeRaw ? this.trimProbeToStartAtSelection(selection, probeRaw) || probeRaw : '';
     const probeWordCount = probeAligned ? PdfParser.countTokensLikeEngineNoBreaks(probeAligned) : 0;
 
     let preferGlobal: number | undefined = undefined;
+    let chosenReason = '';
+    let contextTokens: { offset: number; key: string }[] = [];
+
+    // If we have a multi-token probe, anchor it globally first. This catches repeated-token cases
+    // where page resolution fails (iframe/DOM quirks) so we can still bias toward the actual
+    // clicked occurrence instead of the first match in the document.
+    if (probeWordCount >= 2) {
+      const globalProbe = this.findStartWordIndexFromSelection(fullText, probeAligned);
+      if (globalProbe !== undefined) preferGlobal = globalProbe;
+    }
 
     if (selectionPage && pageMap) {
       const pageIdx = selectionPage - 1;
@@ -2516,6 +2463,9 @@ export class PdfViewIntegration {
         // IMPORTANT: use a newline-insensitive token space for hints; the DOM selection text rarely matches
         // extracted PDF line breaks 1:1, and counting newline tokens here causes drift that grows with page length.
         const wordsInPageNoBreak = pageText ? PdfParser.countTokensLikeEngineNoBreaks(pageText) : 0;
+
+        diagnostics.pageWordCount = wordsInPageNoBreak;
+        diagnostics.pageEngineBase = base;
 
         let preferInPageNoBreak: number = 0;
 
@@ -2534,10 +2484,17 @@ export class PdfViewIntegration {
             ? Math.round(y * wordsInPageNoBreak)
             : undefined;
 
+        const geometryMaxDist =
+          yEst !== undefined && wordsInPageNoBreak > 0
+            ? Math.max(120, Math.floor(wordsInPageNoBreak * 0.35))
+            : undefined;
+
         // Default preference: DOM hint if available, else geometry estimate.
         if (hint !== undefined) preferInPageNoBreak = hint;
         else if (yEst !== undefined) preferInPageNoBreak = yEst;
         else preferInPageNoBreak = 0;
+
+        diagnostics.preferredSource = hint !== undefined ? 'pageHint' : yEst !== undefined ? 'geometryY' : 'none';
 
         // If figure labels / columns scramble DOM order, the DOM hint diverges sharply from y-based estimate.
         // In that case, trust geometry.
@@ -2569,25 +2526,159 @@ export class PdfViewIntegration {
         })();
 
         preferGlobal = base + preferInPage;
+        diagnostics.preferredEngineIndex = preferGlobal;
+
+        if (this.isAmbiguousAcronymSelection(selection, matchKey)) {
+          contextTokens = this.captureContextTokens(tokensAll, preferGlobal, 3);
+          diagnostics.selectionContextKeys = contextTokens.map((c) => c.key);
+        }
+
+        const pageTokens = PdfParser.tokenizeLikeEngine(pageText);
+        for (let i = 0; i < pageTokens.length; i++) {
+          const tok = pageTokens[i];
+          if (!tok || tok === PdfParser.LINEBREAK_MARKER) continue;
+          const key = PdfParser.normalizePdfTokenForMatch(tok);
+          if (!key || !matchKey) continue;
+          if (!this.tokenMatchesSelectionKey(tok, matchKey)) continue;
+          diagnostics.candidates.push({
+            globalIndex: base + i,
+            inPageIndex: i,
+            token: tok,
+            matchKey: key,
+            distanceToPreferred: Number.isFinite(preferInPage) ? Math.abs(i - preferInPage) : undefined,
+          });
+        }
 
         // Prefer a longer probe when available (disambiguates repeated words).
         if (probeWordCount >= 2) {
-          const withinProbe = this.findStartWordIndexFromSelection(pageText, probeAligned, preferInPage);
-          if (withinProbe !== undefined) return base + withinProbe;
+          const withinProbe = this.findStartWordIndexFromSelection(pageText, probeAligned, preferInPage, {
+            maxDistanceFromPreferred: geometryMaxDist,
+          });
+          if (withinProbe !== undefined) {
+            chosenReason = 'page:probe-match';
+            diagnostics.chosenIndex = base + withinProbe;
+            diagnostics.chosenReason = chosenReason;
+            return { index: base + withinProbe, diagnostics };
+          }
         }
 
-        const within = this.findStartWordIndexFromSelection(pageText, selection, preferInPage);
-        if (within !== undefined) return base + within;
+        const within = this.findStartWordIndexFromSelection(pageText, selection, preferInPage, {
+          maxDistanceFromPreferred: geometryMaxDist,
+        });
+        if (within !== undefined) {
+          chosenReason = 'page:selection-match';
+          diagnostics.chosenIndex = base + within;
+          diagnostics.chosenReason = chosenReason;
+          return { index: base + within, diagnostics };
+        }
       }
+    }
+
+    if (diagnostics.preferredEngineIndex === undefined && preferGlobal !== undefined) {
+      diagnostics.preferredEngineIndex = preferGlobal;
+      diagnostics.preferredSource = diagnostics.preferredSource ?? 'probe-global';
+    }
+
+    if (!contextTokens.length && this.isAmbiguousAcronymSelection(selection, matchKey)) {
+      contextTokens = this.captureContextTokens(tokensAll, diagnostics.preferredEngineIndex, 3);
+      if (contextTokens.length) diagnostics.selectionContextKeys = contextTokens.map((c) => c.key);
+    }
+
+    const applyContextDisambiguation = (): number | undefined => {
+      if (!contextTokens.length || !diagnostics.candidates.length) return undefined;
+      const prefer = diagnostics.preferredEngineIndex;
+      let best: PdfAnchorCandidate | undefined;
+      let bestScore = Number.POSITIVE_INFINITY;
+      let bestTieDist = Number.POSITIVE_INFINITY;
+
+      for (const cand of diagnostics.candidates) {
+        if (!Number.isFinite(cand.globalIndex)) continue;
+        const distanceComponent = Number.isFinite(prefer)
+          ? Math.abs((cand.globalIndex as number) - (prefer as number))
+          : cand.distanceToPreferred ?? 0;
+        let matches = 0;
+        let mismatches = 0;
+        for (const ctx of contextTokens) {
+          const key = this.getTokenKeyAtOffset(tokensAll, cand.globalIndex, ctx.offset);
+          if (!key) {
+            mismatches++;
+            continue;
+          }
+          if (key === ctx.key) matches++;
+          else mismatches++;
+        }
+
+        if (ambiguousSelection && matches === 0) {
+          cand.contextScore = Number.POSITIVE_INFINITY;
+          continue;
+        }
+
+        const mismatchPenalty = mismatches * 50;
+        const matchBonus = matches > 0 ? Math.min(matches, contextTokens.length) * 5 : 0;
+        let score = distanceComponent + mismatchPenalty - matchBonus;
+        if (ambiguousSelection && matches < contextTokens.length) score += (contextTokens.length - matches) * 10;
+        cand.contextScore = score;
+        const tieDist = cand.distanceToPreferred ?? distanceComponent;
+        if (score < bestScore || (score === bestScore && tieDist < bestTieDist)) {
+          best = cand;
+          bestScore = score;
+          bestTieDist = tieDist;
+        }
+      }
+
+      return best?.globalIndex;
+    };
+
+    // If page-scoped match fails, still bias toward where the selection occurred.
+    if (!diagnostics.candidates.length) {
+      const windowRadius = 400;
+      const preferred = Number.isFinite(preferGlobal) ? preferGlobal! : Math.floor(tokensAll.length / 2);
+      const lo = Math.max(0, preferred - windowRadius);
+      const hi = Math.min(tokensAll.length - 1, preferred + windowRadius);
+      for (let i = lo; i <= hi; i++) {
+        const tok = tokensAll[i];
+        if (!tok || tok === PdfParser.LINEBREAK_MARKER) continue;
+        const key = PdfParser.normalizePdfTokenForMatch(tok);
+        if (!key || !matchKey) continue;
+        if (!this.tokenMatchesSelectionKey(tok, matchKey)) continue;
+        diagnostics.candidates.push({
+          globalIndex: i,
+          token: tok,
+          matchKey: key,
+          distanceToPreferred: Number.isFinite(preferGlobal) ? Math.abs(i - (preferGlobal as number)) : undefined,
+        });
+      }
+    }
+
+    const contextPick = applyContextDisambiguation();
+    if (contextPick !== undefined) {
+      chosenReason = 'context-disambiguation';
+      diagnostics.chosenIndex = contextPick;
+      diagnostics.chosenReason = chosenReason;
+      return { index: contextPick, diagnostics };
     }
 
     // If page-scoped match fails, still bias toward where the selection occurred.
     if (probeWordCount >= 2) {
-      const idx = this.findStartWordIndexFromSelection(fullText, probeAligned, preferGlobal);
-      if (idx !== undefined) return idx;
+      const idx = this.findStartWordIndexFromSelection(fullText, probeAligned, preferGlobal, {
+        maxDistanceFromPreferred: preferGlobal !== undefined ? 240 : undefined,
+      });
+      if (idx !== undefined) {
+        chosenReason = 'document:probe-match';
+        diagnostics.chosenIndex = idx;
+        diagnostics.chosenReason = chosenReason;
+        return { index: idx, diagnostics };
+      }
     }
 
-    return this.findStartWordIndexFromSelection(fullText, selection, preferGlobal);
+    const idx = this.findStartWordIndexFromSelection(fullText, selection, preferGlobal, {
+      maxDistanceFromPreferred: preferGlobal !== undefined ? 240 : undefined,
+    });
+
+    diagnostics.chosenIndex = idx;
+    diagnostics.chosenReason = idx !== undefined ? 'document:selection-match' : 'not-found';
+
+    return { index: idx, diagnostics };
   }
 
   private async getPdfDocumentFromActiveView(timeoutMs = 6000): Promise<any> {
@@ -2655,7 +2746,7 @@ export class PdfViewIntegration {
    * (Do NOT use this for display; it is only for anchor matching / logs.)
    */
   public getMatchKeyForToken(token: string): string {
-    return this.normalizePdfTokenForMatch(token);
+    return PdfParser.normalizePdfTokenForMatch(token);
   }
 
   /**
@@ -2670,7 +2761,7 @@ export class PdfViewIntegration {
     preferredEngineIndex?: number,
     maxCandidates = 5
   ): number[] {
-    const target = this.normalizePdfTokenForMatch(String(selection ?? '').trim());
+    const target = PdfParser.normalizePdfTokenForMatch(String(selection ?? '').trim());
     if (!target) return [];
 
     const tokens = PdfParser.tokenizeLikeEngine(text);
