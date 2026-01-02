@@ -211,6 +211,13 @@ export default class DashReaderPlugin extends Plugin {
     // This strips wrapping brackets (e.g. "(word)" / "word)") and ignores punctuation-only bleed.
     const normalized = this.pdf.normalizeSingleWordSelection(selectionRaw);
 
+    const fallbackToSelectionOnly = (why: string) => {
+      console.info('[DashReader][pdf-launch:fallback-selection]', { why, selectionRaw, normalized });
+      const modal = this.openModal({ skipInitialAutoLoad: true });
+      modal.loadPlainText(selectionRaw || normalized, { fileName: file.name, lineNumber: 1, cursorPosition: 1 });
+      new Notice('Could not anchor selection in PDF; reading the selected text only.');
+    };
+
     if (DEBUG_PDF_SELECTION) {
       console.debug('[DashReader][pdf-select]', {
         command: 'launchFromCursor',
@@ -289,11 +296,10 @@ export default class DashReaderPlugin extends Plugin {
 
         if (inHeaderFooterBand) {
           new Notice(
-            'Selected word may be in a header/footer region (and could be removed during extraction). Try a word further into the page body.'
+            'Selected word may be in a header/footer region (and could be removed during extraction). Trying selected text only.'
           );
-        } else {
-          new Notice('Could not locate the selected word in the extracted PDF text');
         }
+        fallbackToSelectionOnly('start-index-not-found');
         return;
       }
 
@@ -313,7 +319,7 @@ export default class DashReaderPlugin extends Plugin {
             windowAtStart: this.pdf.getEngineTokenWindow(fullText, startWordIndex, 6),
           });
         } catch {}
-        new Notice('Selected word could not be aligned in the extracted token stream');
+        fallbackToSelectionOnly('anchor-align-fail');
         return;
       }
       if (aligned !== startWordIndex) {
@@ -352,7 +358,7 @@ export default class DashReaderPlugin extends Plugin {
             selectionLookup.diagnostics.chosenReason = `${selectionLookup.diagnostics.chosenReason ?? 'match'} -> snapped-nearby`;
             startWordIndex = best;
           } else {
-            new Notice('Selected word could not be aligned in the extracted token stream');
+            fallbackToSelectionOnly('selection-token-not-found-nearby');
             return;
           }
         }
@@ -502,7 +508,22 @@ export default class DashReaderPlugin extends Plugin {
       }
       modal.loadPlainText(text, { fileName: file.name, lineNumber: 1 });
     } catch (err) {
-      console.error('[DashReader] PDF extract failed', err);
+      console.error('[DashReader] PDF extract failed; trying file fallback', err);
+
+      if (pdfView) {
+        try {
+          const text = await this.pdf.extractFullTextViaFileFallback(file, 200);
+          if (!text) {
+            new Notice('No text could be extracted from this PDF');
+            return;
+          }
+          modal.loadPlainText(text, { fileName: file.name, lineNumber: 1 });
+          return;
+        } catch (err2) {
+          console.error('[DashReader] PDF file fallback extract failed', err2);
+        }
+      }
+
       new Notice('Could not extract text from this PDF');
     }
   }

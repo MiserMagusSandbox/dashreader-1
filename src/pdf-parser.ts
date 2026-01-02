@@ -97,9 +97,10 @@ export class PdfParser {
   // ---------------------------------------------------------------------------
 
   private static readonly BODY_BOX: BodyBoxConfig = {
-    headerPct: 0.12,
-    footerPct: 0.10,
-    marginPct: 0.08,
+    // Avoid hard-coded edge clipping; rely on signature/watermark detection instead.
+    headerPct: 0,
+    footerPct: 0,
+    marginPct: 0,
   };
 
   private static percentile(sorted: number[], p: number): number {
@@ -240,10 +241,28 @@ export class PdfParser {
       const trimmedLen = it.str.trim().length;
       const looksOverlay =
         trimmedLen > 0 &&
-        trimmedLen <= 12 &&
+        trimmedLen <= 14 &&
         (fontRatio < 0.58 || fontRatio > 2.25 || ang > 22) &&
         !/\w{13,}/.test(it.str);
-      if (looksOverlay) {
+
+      // Figure/axis overlays often show up as tiny single words floating near images.
+      // Add an extra guard for extremely short words that are far narrower than body columns.
+      const looksLikeFloatingFigureWord =
+        trimmedLen > 0 &&
+        trimmedLen <= 8 &&
+        fontRatio < 0.72 &&
+        Math.max(0, Math.min(1, (it.x2 - it.x) / Math.max(ctx.pageW, 1))) <= 0.18;
+
+      // Suppress tiny fragments that sit inside a narrow horizontal window with body-like angle.
+      // These are typically stray chart labels/axis ticks bleeding into the text layer.
+      const looksLikeNarrowFigureFragment =
+        trimmedLen > 0 &&
+        trimmedLen <= 10 &&
+        fontRatio <= 0.9 &&
+        ang <= 12 &&
+        Math.max(0, Math.min(1, (it.x2 - it.x) / Math.max(ctx.pageW, 1))) <= 0.12;
+
+      if (looksOverlay || looksLikeFloatingFigureWord || looksLikeNarrowFigureFragment) {
         stats.figureOverlay++;
         continue;
       }
@@ -1050,13 +1069,29 @@ export class PdfParser {
     // Split each raw line into one or more "segments" separated by a large
     // X gap (typical two-column gutter). This prevents left+right columns
     // being merged into one line string.
+    //
+    // Use an adaptive gap threshold so narrower gutters (common in science
+    // PDFs) still split. We scale by body font size, page width, and the
+    // observed intra-line spacing to avoid requiring an oversized gap.
     // ---------------------------------------------------------------------
-    const splitGap = Math.max(24, bodyFont * 6.5);
     const splitRawLineIntoSegments = (ln: { y: number; items: It[] }): { y: number; items: It[] }[] => {
       const its = [...ln.items].sort((a, b) => a.x - b.x);
       const segs: { y: number; items: It[] }[] = [];
       let cur: It[] = [];
       let prevX2: number | null = null;
+
+      const gaps: number[] = [];
+      for (let i = 1; i < its.length; i++) {
+        const gap = Number(its[i].x ?? 0) - Number(its[i - 1].x2 ?? its[i - 1].x ?? 0);
+        if (Number.isFinite(gap)) gaps.push(gap);
+      }
+
+      const sortedGaps = gaps.filter((g) => g > 0).sort((a, b) => a - b);
+      const medianGap = PdfParser.percentile(sortedGaps, 0.5);
+      const gap75 = PdfParser.percentile(sortedGaps, 0.75);
+      const baseGap = Math.max(14, bodyFont * 4.5, pageW * 0.025);
+      const adaptiveGap = Math.max(baseGap, medianGap * 3.2, gap75 * 2.2);
+      const splitGap = Math.min(adaptiveGap, Math.max(pageW * 0.20, baseGap * 4));
 
       for (const it of its) {
         if (!cur.length) {
@@ -1238,6 +1273,42 @@ export class PdfParser {
       type LnRange = { idx: number; x1: number; x2: number; xMid: number; w: number };
       const ranges: LnRange[] = lns.map((ln, idx) => ({ idx, ...lineXRange2(ln.items) }));
 
+      const gutterThreshold = Math.max(pageW * 0.08, mergeGap * 1.2);
+
+      // Try to infer a stable gutter between two column clusters using x-mid gaps.
+      const narrowRanges = ranges
+        .filter((r) => !isFullWidthSegment(lns[r.idx].items) && r.w <= pageW * 0.72)
+        .sort((a, b) => (a.xMid - b.xMid) || (a.idx - b.idx));
+
+      let inferredBands: { x1: number; x2: number }[] | null = null;
+      if (narrowRanges.length >= 2) {
+        let bestSplit = -1;
+        let bestGap = -1;
+        for (let i = 1; i < narrowRanges.length; i++) {
+          const prev = narrowRanges[i - 1];
+          const cur = narrowRanges[i];
+          const gap = cur.xMid - prev.xMid;
+          if (gap > gutterThreshold && gap > bestGap) {
+            bestGap = gap;
+            bestSplit = i;
+          }
+        }
+
+        if (bestSplit > 0) {
+          const left = narrowRanges.slice(0, bestSplit);
+          const right = narrowRanges.slice(bestSplit);
+          const leftX1 = Math.min(...left.map((r) => r.x1));
+          const leftX2 = Math.max(...left.map((r) => r.x2));
+          const rightX1 = Math.min(...right.map((r) => r.x1));
+          const rightX2 = Math.max(...right.map((r) => r.x2));
+          const gutter = (leftX2 + rightX1) / 2;
+          inferredBands = [
+            { x1: Math.max(0, leftX1), x2: Math.min(pageW, gutter) },
+            { x1: Math.max(0, gutter), x2: Math.min(pageW, rightX2) },
+          ];
+        }
+      }
+
       // Seed column bands from non-full-width segments so wide separators do not merge columns.
       const seedRanges = ranges
         .filter((r) => !isFullWidthSegment(lns[r.idx].items))
@@ -1245,6 +1316,10 @@ export class PdfParser {
 
       type ColumnBand = { x1: number; x2: number; seeds: number[] };
       const bands: ColumnBand[] = [];
+
+      if (inferredBands) {
+        for (const b of inferredBands) bands.push({ x1: b.x1, x2: b.x2, seeds: [] });
+      }
 
       for (const r of seedRanges) {
         const last = bands[bands.length - 1];
@@ -1692,27 +1767,37 @@ export class PdfParser {
       bodyFont: number;
     };
 
-    const pageItems: PageMeta[] = [];
+    const pageItems: Array<PageMeta | null> = [];
 
     // Pass 1: collect items for every page (no filtering yet)
     for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
-      const page = await pdf.getPage(pageNum);
-      const content = await page.getTextContent();
-      const parsed = PdfParser.parsePageTextItems(page, content);
+      try {
+        const page = await pdf.getPage(pageNum);
+        const content = await page.getTextContent();
+        const parsed = PdfParser.parsePageTextItems(page, content);
 
-      pageItems.push({
-        page,
-        content,
-        items: parsed.items,
-        pageW: parsed.pageW,
-        pageH: parsed.pageH,
-        bodyFont: parsed.bodyFont,
-      });
+        pageItems.push({
+          page,
+          content,
+          items: parsed.items,
+          pageW: parsed.pageW,
+          pageH: parsed.pageH,
+          bodyFont: parsed.bodyFont,
+        });
+      } catch (err) {
+        console.error('[DashReader][pdf-extract] Failed to read page; skipping', { pageNum, err });
+        pageItems.push(null);
+      }
     }
 
-    const repeatedKeys = PdfParser.computeRepeatedStationaryKeys(pageItems);
+    const repeatedKeys = PdfParser.computeRepeatedStationaryKeys(pageItems.filter((p): p is PageMeta => !!p));
 
     for (const meta of pageItems) {
+      if (!meta) {
+        pagesLines.push([]);
+        continue;
+      }
+
       const { kept } = PdfParser.filterItemsForBody(meta.items, {
         pageW: meta.pageW,
         pageH: meta.pageH,
@@ -1916,26 +2001,38 @@ export class PdfParser {
       bodyFont: number;
     };
 
-    const pageItems: PageMeta[] = [];
+    const pageItems: Array<PageMeta | null> = [];
 
     for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
-      const page = await pdfDoc.getPage(pageNum);
-      const content = await page.getTextContent();
-      const parsed = PdfParser.parsePageTextItems(page, content);
+      try {
+        const page = await pdfDoc.getPage(pageNum);
+        const content = await page.getTextContent();
+        const parsed = PdfParser.parsePageTextItems(page, content);
 
-      pageItems.push({
-        page,
-        content,
-        items: parsed.items,
-        pageW: parsed.pageW,
-        pageH: parsed.pageH,
-        bodyFont: parsed.bodyFont,
-      });
+        pageItems.push({
+          page,
+          content,
+          items: parsed.items,
+          pageW: parsed.pageW,
+          pageH: parsed.pageH,
+          bodyFont: parsed.bodyFont,
+        });
+      } catch (err) {
+        console.error('[DashReader][pdf-extract] Failed to read page for debug; skipping', { pageNum, err });
+        pageItems.push(null);
+      }
     }
 
-    const repeatedKeys = PdfParser.computeRepeatedStationaryKeys(pageItems);
+    const repeatedKeys = PdfParser.computeRepeatedStationaryKeys(pageItems.filter((p): p is PageMeta => !!p));
 
     for (const meta of pageItems) {
+      if (!meta) {
+        exclusionStats.push({ bodyBox: 0, repeatedStamp: 0, watermark: 0, figureOverlay: 0 });
+        pagesLines.push([]);
+        removedDisplayEquationsPerPage.push([]);
+        continue;
+      }
+
       const { kept, stats } = PdfParser.filterItemsForBody(meta.items, {
         pageW: meta.pageW,
         pageH: meta.pageH,
