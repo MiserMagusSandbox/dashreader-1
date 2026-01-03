@@ -144,6 +144,13 @@ export type PdfExclusionLogEntry = {
   excerpt: string;
 };
 
+export type PdfColumnTokenRange = {
+  pageIndex: number;
+  columnIndex: number;
+  start: number;
+  endExclusive: number;
+};
+
 export type PdfNarrativeIndex = {
   pageCount: number;
   pages: {
@@ -165,6 +172,7 @@ export type PdfNarrativeIndex = {
   // Structural markers
   isLikelyScholarly: boolean;
   referencesHardStopTokenIndex?: number;
+  columnTokenRanges?: PdfColumnTokenRange[];
 };
 
 export type PdfSelectionContext = {

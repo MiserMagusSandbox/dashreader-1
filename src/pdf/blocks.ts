@@ -2,15 +2,9 @@
 // Group lines within each column into blocks, then classify blocks structurally.
 
 import type { PdfBlock, PdfBlockType, PdfColumn, PdfLine, PdfExcludeReason } from './types';
-import { bboxUnion, median, percentile, stableSortBy } from './utils';
+import { bboxUnion, median, percentile } from './utils';
 
-type BlockBuildOpts = {
-  pageIndex: number;
-  columnIndex: number;
-  columnX0n: number;
-  columnX1n: number;
-  bodyFontSize: number;
-};
+
 
 function mkBBoxFromLine(l: PdfLine) {
   return { x0: l.x0n, y0: l.y0n, x1: l.x1n, y1: l.y1n };
@@ -183,21 +177,34 @@ function looksFigureInternal(lines: PdfLine[], colX0n: number, colX1n: number, b
   return spread >= 0.10 || smallFont;
 }
 
-function looksDisplayEquation(lines: PdfLine[], colX0n: number, colX1n: number, medianGap: number): boolean {
-  // Layout-only: centered + isolated + short width.
+function looksDisplayEquation(lines: PdfLine[], colX0n: number, colX1n: number, medianGap: number, bodyFontSize: number): boolean {
+  // Layout-only: centered + short width, with a font-size gate to avoid excluding small captions.
   const colMid = (colX0n + colX1n) / 2;
   const colW = colX1n - colX0n;
+
   const centered = lines.every((l) => {
     const xMid = (l.x0n + l.x1n) / 2;
     return Math.abs(xMid - colMid) <= Math.max(0.03, colW * 0.08);
   });
   if (!centered) return false;
+
   const w = Math.max(...lines.map((l) => l.x1n)) - Math.min(...lines.map((l) => l.x0n));
-  if (w > colW * 0.7) return false;
-  // Multi-line centered blocks are more likely equations.
+  const wRatio = w / Math.max(1e-6, colW);
+  if (wRatio > 0.72) return false;
+
+  const fonts = lines
+    .map((l) => l.fontSize)
+    .filter((n) => Number.isFinite(n) && n > 0)
+    .sort((a, b) => a - b);
+  const fMed = fonts.length ? (median(fonts) ?? 0) : 0;
+  if (bodyFontSize > 0 && fMed > 0 && fMed < bodyFontSize * 0.88) return false;
+
   if (lines.length >= 2) return true;
-  // Single-line: require strong isolation (caller provides medianGap; we will require bigger gaps via block split rule).
-  return true;
+
+  // Single-line: be stricter (avoid excluding centered headings/captions).
+  // Use median line-gap as a weak isolation proxy (purely geometric).
+  const th = 0.55 + Math.max(0, Math.min(0.06, medianGap * 0.8));
+  return wRatio <= th;
 }
 
 function joinBlockText(lines: PdfLine[]): string {
@@ -231,7 +238,6 @@ export function buildAndClassifyBlocks(column: PdfColumn, opts: { bodyFontSize: 
     let type: PdfBlockType = 'Paragraph';
     let included = true;
     let reason: PdfExcludeReason | undefined;
-    let confidence = 0.9;
 
     const headingLike = isHeadingLike(current, opts.bodyFontSize);
     const listLike = isListItemLike(current);
@@ -241,17 +247,14 @@ export function buildAndClassifyBlocks(column: PdfColumn, opts: { bodyFontSize: 
       type = 'TableInternal';
       included = false;
       reason = 'TABLE_INTERNAL';
-      confidence = 0.95;
     } else if (looksFigureInternal(current, column.x0n, column.x1n, opts.bodyFontSize)) {
       type = 'FigureInternal';
       included = false;
       reason = 'FIGURE_INTERNAL';
-      confidence = 0.9;
-    } else if (!headingLike && !listLike && looksDisplayEquation(current, column.x0n, column.x1n, medianGap)) {
+    } else if (!headingLike && !listLike && looksDisplayEquation(current, column.x0n, column.x1n, medianGap, opts.bodyFontSize)) {
       type = 'DisplayEquation';
       included = false;
       reason = 'DISPLAY_EQUATION';
-      confidence = 0.7;
     }
 
     // If still included, decide narrative subtype.
@@ -261,11 +264,57 @@ export function buildAndClassifyBlocks(column: PdfColumn, opts: { bodyFontSize: 
       else type = 'Paragraph';
     }
 
-    // Ambiguity policy: if low confidence, exclude.
-    if (included && confidence < 0.55) {
-      included = false;
-      reason = 'AMBIGUOUS_NON_NARRATIVE';
-      type = 'MarginDecorative';
+    // Confidence scoring (layout-only). Lower confidence -> ambiguity exclusion.
+    const colW = Math.max(1e-6, column.x1n - column.x0n);
+    const wRatio = (bb.x1 - bb.x0) / colW;
+    const blockFonts = current
+      .map((l) => l.fontSize)
+      .filter((n) => Number.isFinite(n) && n > 0)
+      .sort((a, b) => a - b);
+    const fMed = blockFonts.length ? (median(blockFonts) ?? 0) : 0;
+    const fontNearBody = opts.bodyFontSize > 0 && fMed > 0 && Math.abs(fMed - opts.bodyFontSize) <= opts.bodyFontSize * 0.16;
+    const xMid = (bb.x0 + bb.x1) / 2;
+    const colMid = (column.x0n + column.x1n) / 2;
+    const centered = Math.abs(xMid - colMid) <= Math.max(0.028, colW * 0.06);
+    const leftAligned = Math.abs(bb.x0 - bodyLeftX) <= 0.02;
+    const lineCount = current.length;
+
+    let confidence = 0.9;
+    if (included) {
+      if (type === 'Paragraph') {
+        confidence = 0.72;
+        if (lineCount >= 2) confidence += 0.08;
+        if (lineCount >= 3) confidence += 0.05;
+        if (wRatio >= 0.78) confidence += 0.07;
+        if (leftAligned) confidence += 0.05;
+        if (fontNearBody) confidence += 0.05;
+        if (lineCount === 1) confidence -= 0.22;
+        if (wRatio < 0.60) confidence -= 0.22;
+        if (centered) confidence -= 0.10;
+      } else if (type === 'ListItem') {
+        const indent = hangingIndentScore(current);
+        confidence = 0.74;
+        if (indent >= 0.02) confidence += 0.12;
+        if (lineCount >= 2) confidence += 0.06;
+        if (wRatio >= 0.70) confidence += 0.05;
+        if (wRatio < 0.55) confidence -= 0.15;
+      } else if (type === 'Heading') {
+        const ratio = opts.bodyFontSize > 0 && fMed > 0 ? fMed / opts.bodyFontSize : 1;
+        confidence = 0.78;
+        if (ratio >= 1.22) confidence += 0.12;
+        if (ratio >= 1.35) confidence += 0.05;
+        if (lineCount <= 2) confidence += 0.05;
+        if (wRatio >= 0.95 && ratio < 1.25) confidence -= 0.10;
+      }
+      confidence = Math.max(0, Math.min(1, confidence));
+      if (confidence < 0.60) {
+        included = false;
+        reason = 'AMBIGUOUS_NON_NARRATIVE';
+        type = 'MarginDecorative';
+      }
+    } else {
+      // Excluded blocks are considered high confidence exclusions.
+      confidence = type === 'DisplayEquation' ? 0.80 : 0.95;
     }
 
     blocks.push({

@@ -497,7 +497,6 @@ export class PdfViewIntegration {
   }
 
   private walkUpToPageElement(node: Node | null): HTMLElement | null {
-    let el: HTMLElement | null = null;
     let cur: any = node;
     while (cur) {
       if (cur instanceof HTMLElement) {
@@ -506,7 +505,6 @@ export class PdfViewIntegration {
           const num = this.readPageNumber(cur);
           if (num) return cur;
         }
-        el = cur;
       }
       cur = cur.parentNode;
     }

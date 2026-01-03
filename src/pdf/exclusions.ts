@@ -14,26 +14,25 @@ function lineKey(pageIndex: number, idx: number): string {
   return `${pageIndex}:${idx}`;
 }
 
-type SignatureOcc = { key: string; count: number };
 
 export function detectRepeatedHeaderFooterLines(pages: { pageIndex: number; lines: PdfLine[] }[]): Set<string> {
   const counts = new Map<string, number>();
 
   for (const p of pages) {
-    p.lines.forEach((l, idx) => {
+    for (let idx = 0; idx < p.lines.length; idx++) {
+      const l = p.lines[idx];
       // candidate bands only
       // Slightly wider than 8% to survive PDF crop-box variations.
-      if (!(l.yMid < 0.12 || l.yMid > 0.88)) return;
+      if (!(l.yMid < 0.12 || l.yMid > 0.88)) continue;
       const sig = normaliseForRepetition(l.text);
-      if (!sig || sig.length < 3) return;
+      if (!sig || sig.length < 3) continue;
 
       const yBand = l.yMid < 0.12 ? 'H' : 'F';
       // Coarser quantization makes repetition robust to minor renderer/layout variation.
       const qx = Math.round(quantize((l.x0n + l.x1n) / 2, 0.05) * 100);
-      const qy = yBand;
       const key = `${yBand}|${qx}|${sig}`;
       counts.set(key, (counts.get(key) ?? 0) + 1);
-    });
+    }
   }
 
   const repeatedKeys = new Set<string>();
@@ -43,15 +42,16 @@ export function detectRepeatedHeaderFooterLines(pages: { pageIndex: number; line
 
   const out = new Set<string>();
   for (const p of pages) {
-    p.lines.forEach((l, idx) => {
-      if (!(l.yMid < 0.12 || l.yMid > 0.88)) return;
+    for (let idx = 0; idx < p.lines.length; idx++) {
+      const l = p.lines[idx];
+      if (!(l.yMid < 0.12 || l.yMid > 0.88)) continue;
       const sig = normaliseForRepetition(l.text);
-      if (!sig || sig.length < 3) return;
+      if (!sig || sig.length < 3) continue;
       const yBand = l.yMid < 0.12 ? 'H' : 'F';
       const qx = Math.round(quantize((l.x0n + l.x1n) / 2, 0.05) * 100);
       const key = `${yBand}|${qx}|${sig}`;
       if (repeatedKeys.has(key)) out.add(lineKey(p.pageIndex, idx));
-    });
+    }
   }
   return out;
 }

@@ -224,7 +224,7 @@ export async function parsePdfDocumentToNarrativeIndex(
     }
 
     // Deterministic block indexing per column.
-    for (const [colIdx, arr] of byCol.entries()) {
+    for (const [, arr] of byCol.entries()) {
       arr.sort((a, b) => a.y0n - b.y0n || a.x0n - b.x0n);
       arr.forEach((b, i) => (b.blockIndex = i));
       blocks.push(...arr);
@@ -256,11 +256,16 @@ export async function parsePdfDocumentToNarrativeIndex(
   const captionTagged = tagCaptions(blocksInReadingOrder);
 
   // Conservative footnote/boilerplate exclusion: small-font blocks near the bottom of a page.
-  // (Spec §7.1: footnotes unrelated to narrative should not enter the RSVP stream.)
+  // Structural only; prefer exclusion over inclusion.
   const byPageBodyFont = new Map<number, number>();
   for (const p of pagesOut) {
     const mids = p.blocks
-      .filter((b) => b.included && b.type === 'Paragraph' && ((b.y0n + b.y1n) / 2) > 0.15 && ((b.y0n + b.y1n) / 2) < 0.85)
+      .filter((b) => {
+        if (!b.included) return false;
+        if (b.type !== 'Paragraph' && b.type !== 'ListItem') return false;
+        const yMid = (b.y0n + b.y1n) / 2;
+        return yMid > 0.15 && yMid < 0.85;
+      })
       .map(blockMedianFontSize)
       .filter((n) => Number.isFinite(n) && n > 0)
       .sort((a, b) => a - b);
@@ -269,21 +274,35 @@ export async function parsePdfDocumentToNarrativeIndex(
 
   for (const b of captionTagged) {
     if (!b.included) continue;
+    // Never exclude captions by this rule.
     if (b.type === 'FigureCaption' || b.type === 'TableCaption') continue;
     const bodyFont = byPageBodyFont.get(b.pageIndex) ?? 0;
     if (!(bodyFont > 0)) continue;
     const bFont = blockMedianFontSize(b);
+    if (!(bFont > 0)) continue;
     const w = b.x1n - b.x0n;
-    if (b.y0n > 0.83 && w < 0.95 && bFont > 0 && bFont <= bodyFont * 0.82) {
+    if (b.y0n > 0.83 && w < 0.95 && bFont <= bodyFont * 0.82) {
       b.included = false;
       b.excludeReason = 'MARGIN_DECORATIVE';
+      b.type = 'MarginDecorative';
       b.confidence = Math.min(b.confidence, 0.95);
     }
   }
 
+  // Column bounds lookup for journal heuristics (column-relative width ratios).
+  const colBounds = new Map<string, { x0n: number; x1n: number }>();
+  for (const pg of pagesOut) {
+    for (const c of pg.columns) {
+      colBounds.set(`${pg.pageIndex}:${c.columnIndex}`, { x0n: c.x0n, x1n: c.x1n });
+    }
+  }
+  const journalLayout = {
+    getColumnBounds: (pageIndex: number, columnIndex: number) => colBounds.get(`${pageIndex}:${columnIndex}`) ?? null,
+  };
+
   // Journal constraints (only when detected structurally).
-  const scholarly = detectScholarlyAndReferences(captionTagged);
-  const journalApplied = applyJournalConstraints(captionTagged, scholarly);
+  const scholarly = detectScholarlyAndReferences(captionTagged, journalLayout);
+  const journalApplied = applyJournalConstraints(captionTagged, scholarly, journalLayout);
   const finalBlocks = journalApplied.blocks;
 
   // Assign Markdown-style heading levels (1..6) structurally, based on font-size bands.
@@ -335,6 +354,23 @@ export async function parsePdfDocumentToNarrativeIndex(
     exclusions,
     isLikelyScholarly: scholarly.isLikelyScholarly,
   };
+
+  // Column token ranges (for column-bounded RSVP stepping / navigation).
+  const colRanges = new Map<string, { pageIndex: number; columnIndex: number; start: number; endExclusive: number }>();
+  for (let ti = 0; ti < index.tokenMeta.length; ti++) {
+    const m: any = index.tokenMeta[ti] as any;
+    const pi = Number(m.pageIndex);
+    const ci = Number(m.columnIndex);
+    if (!(pi >= 0 && ci >= 0)) continue;
+    const key = `${pi}:${ci}`;
+    const prev = colRanges.get(key);
+    if (!prev) colRanges.set(key, { pageIndex: pi, columnIndex: ci, start: ti, endExclusive: ti + 1 });
+    else {
+      if (ti < prev.start) prev.start = ti;
+      if (ti + 1 > prev.endExclusive) prev.endExclusive = ti + 1;
+    }
+  }
+  index.columnTokenRanges = Array.from(colRanges.values()).sort((a, b) => (a.pageIndex - b.pageIndex) || (a.columnIndex - b.columnIndex));
 
   // Attach token ranges + keys for anchoring.
   attachBlockTokenRanges(index);

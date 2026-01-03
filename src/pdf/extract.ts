@@ -121,25 +121,16 @@ export async function extractPdfPages(pdf: PdfDocLike, opts?: { maxPages?: numbe
   return out;
 }
 
-
-// ---- Line-building parameter estimates (structural-only, deterministic)
-// These helpers live here because they depend on PDF.js geometric font size estimates.
-
-export function estimateSpaceThresholdPx(bodyFontSize: number): number {
-  // Insert a space between adjacent text items when their x-gap exceeds this.
-  // Structural: proportional to font size.
-  if (!(bodyFontSize > 0) || !Number.isFinite(bodyFontSize)) return 2.5;
-  return Math.min(10, Math.max(1.5, bodyFontSize * 0.33));
+export function estimateLineYToleranceNorm(bodyFontSize: number, pageHeightPx: number): number {
+  // Baseline tolerance in normalized units, derived only from geometry.
+  // Slightly generous to survive PDF text-layer fragmentation.
+  const px = Math.max(1, bodyFontSize || 10);
+  const tolPx = Math.max(1.5, px * 0.55);
+  return tolPx / Math.max(1, pageHeightPx);
 }
 
-export function estimateLineYToleranceNorm(bodyFontSize: number, pageHeightPx: number): number {
-  // When grouping items into a line, treat y-mids within this tolerance as the same line.
-  // Structural: proportional to font size, normalized by page height.
-  const h = (pageHeightPx > 0 && Number.isFinite(pageHeightPx)) ? pageHeightPx : 1000;
-  const tolPx = (bodyFontSize > 0 && Number.isFinite(bodyFontSize))
-    ? Math.min(12, Math.max(2.0, bodyFontSize * 0.45))
-    : 3.5;
-  const tolN = tolPx / h;
-  // Clamp to avoid pathological grouping on very small/large pages.
-  return Math.min(0.02, Math.max(0.001, tolN));
+export function estimateSpaceThresholdPx(bodyFontSize: number): number {
+  // Deterministic, geometry-derived spacing threshold.
+  const px = Math.max(1, bodyFontSize || 10);
+  return Math.max(1.5, px * 0.25);
 }
