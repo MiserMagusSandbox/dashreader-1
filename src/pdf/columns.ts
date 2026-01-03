@@ -2,7 +2,7 @@
 // Infer explicit columns from line geometry. No vocabulary heuristics.
 
 import type { PdfColumn, PdfLine } from './types';
-import { clamp01, stableSortBy } from './utils';
+import { clamp01, percentile, stableSortBy } from './utils';
 
 type ColumnInference = {
   boundaries: number[]; // normalized x boundaries (0..1) excluding 0/1
@@ -37,6 +37,43 @@ function inferBoundariesFromGaps(xMins: number[]): ColumnInference {
   return { boundaries: boundaries.sort((a, b) => a - b) };
 }
 
+function inferBoundaryByKMeans2(xMins: number[]): number | null {
+  const xs = xMins.filter((n) => n >= 0 && n <= 1).sort((a, b) => a - b);
+  if (xs.length < 40) return null;
+
+  // Deterministic 1D 2-means.
+  let c1 = percentile(xs, 0.25);
+  let c2 = percentile(xs, 0.75);
+  if (!Number.isFinite(c1) || !Number.isFinite(c2)) return null;
+  if (c2 < c1) [c1, c2] = [c2, c1];
+
+  for (let iter = 0; iter < 8; iter++) {
+    const g1: number[] = [];
+    const g2: number[] = [];
+    for (const x of xs) {
+      (Math.abs(x - c1) <= Math.abs(x - c2) ? g1 : g2).push(x);
+    }
+    if (g1.length < 12 || g2.length < 12) return null;
+    c1 = g1.reduce((a, b) => a + b, 0) / g1.length;
+    c2 = g2.reduce((a, b) => a + b, 0) / g2.length;
+    if (c2 < c1) [c1, c2] = [c2, c1];
+  }
+
+  const sep = c2 - c1;
+  if (sep < 0.18) return null;
+
+  // Prefer an actual gap between clusters when present.
+  const split = (c1 + c2) / 2;
+  const left = xs.filter((x) => x <= split);
+  const right = xs.filter((x) => x > split);
+  if (left.length < 12 || right.length < 12) return null;
+  const leftMax = left[left.length - 1];
+  const rightMin = right[0];
+  const gap = rightMin - leftMax;
+  const boundary = gap >= 0.05 ? (leftMax + rightMin) / 2 : split;
+  return clamp01(boundary);
+}
+
 export function inferColumns(pageIndex: number, lines: PdfLine[]): PdfColumn[] {
   if (!lines.length) return [{ pageIndex, columnIndex: 0, x0n: 0, x1n: 1, lines: [] }];
 
@@ -50,7 +87,11 @@ export function inferColumns(pageIndex: number, lines: PdfLine[]): PdfColumn[] {
     return true;
   });
   const xMins = candidates.map((l) => clamp01(l.x0n));
-  const inf = inferBoundariesFromGaps(xMins);
+  let inf = inferBoundariesFromGaps(xMins);
+  if (!inf.boundaries.length) {
+    const km = inferBoundaryByKMeans2(xMins);
+    if (km !== null) inf = { boundaries: [km] };
+  }
   const bounds = [0, ...inf.boundaries, 1];
 
   const cols: PdfColumn[] = [];

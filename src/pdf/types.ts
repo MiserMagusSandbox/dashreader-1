@@ -52,6 +52,33 @@ export type PdfTextItem = {
   y1n: number;
 };
 
+// ---- Minimal PDF.js-like surface types (avoid importing PDF.js types)
+// These are intentionally tiny so the pipeline can operate on:
+// - PDF.js objects (PDFDocumentProxy/PDFPageProxy)
+// - Obsidian's internal PDF viewer proxies
+// without hard-coding a dependency on any particular PDF.js build.
+
+export type PdfTextItemLike = {
+  str?: unknown;
+  transform?: unknown;
+  width?: unknown;
+  height?: unknown;
+};
+
+export type PdfTextContentLike = {
+  items?: unknown;
+};
+
+export type PdfPageLike = {
+  getViewport: (opts: { scale: number }) => { width: number; height: number };
+  getTextContent: () => Promise<PdfTextContentLike>;
+};
+
+export type PdfDocLike = {
+  numPages: number;
+  getPage: (pageNum: number) => Promise<PdfPageLike>;
+};
+
 export type PdfLine = {
   pageIndex: number;
   items: PdfTextItem[];
@@ -101,6 +128,9 @@ export type PdfBlock = {
   tokens?: string[];
   tokenKeys?: string[];
   tokenRange?: { start: number; end: number }; // in flattened token stream
+
+  // Optional heading level (Markdown-style 1..6). Only meaningful when type === 'Heading'.
+  headingLevel?: 1 | 2 | 3 | 4 | 5 | 6;
 };
 
 export type PdfExclusionLogEntry = {
@@ -144,6 +174,18 @@ export type PdfSelectionContext = {
   // Approximate selection position in page coords (normalized)
   xMidN: number;
   yMidN: number;
+
+  // Optional: selection bounding box within the page (normalized, top-left origin).
+  // Used to detect cross-column selections per spec 2.1/8.1.
+  x0n?: number;
+  x1n?: number;
+  y0n?: number;
+  y1n?: number;
+
+  // Optional: if the selection spans multiple blocks/columns, include them for context.
+  // The primary (columnIndex/blockIndex) should be the earliest-in-reading-order block.
+  spanColumns?: number[];
+  spanBlocks?: Array<{ columnIndex: number; blockIndex: number }>;
 };
 
 export type PdfAnchor = {
@@ -156,21 +198,4 @@ export type PdfAnchor = {
   contextKeys: string[];
   // Optional resolved token index at time of creation
   tokenIndex?: number;
-};
-
-/**
- * Minimal PDF.js document surface used by this pipeline.
- *
- * We intentionally do NOT depend on the full PDFDocumentProxy type.
- * Obsidian sometimes supplies a PDF document object that is compatible at
- * runtime but not assignable to pdfjs-dist's exported TS type.
- */
-export type PdfPageLike = {
-  getTextContent: (params?: any) => Promise<any>;
-  getViewport: (params: { scale: number }) => { width: number; height: number };
-};
-
-export type PdfDocLike = {
-  numPages: number;
-  getPage: (pageNumber: number) => Promise<PdfPageLike>;
 };

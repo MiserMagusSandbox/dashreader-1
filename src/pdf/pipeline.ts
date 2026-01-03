@@ -5,11 +5,76 @@ import type { PdfDocLike, PdfNarrativeIndex, PdfExclusionLogEntry, PdfBlock } fr
 import { extractPdfPages, loadPdfDocument } from './extract';
 import { buildLines } from './lines';
 import { inferColumns } from './columns';
-import { detectMarginDecorativeLines, detectRepeatedHeaderFooterLines, makeLineId } from './exclusions';
+import {
+  detectMarginDecorativeLines,
+  detectRepeatedHeaderFooterLines,
+  detectSingletonEdgeHeaderFooterLines,
+  makeLineId,
+} from './exclusions';
 import { buildAndClassifyBlocks } from './blocks';
 import { tagCaptions } from './captions';
 import { detectScholarlyAndReferences, applyJournalConstraints } from './journal';
 import { attachBlockTokenRanges, flattenNarrative } from './flatten';
+import { median } from './utils';
+
+function blockMedianFontSize(b: PdfBlock): number {
+  const sizes = (b.lines ?? [])
+    .map((l) => l.fontSize)
+    .filter((n) => Number.isFinite(n) && n > 0)
+    .sort((a, c) => a - c);
+  return sizes.length ? median(sizes) : 0;
+}
+
+function assignHeadingLevels(blocksInReadingOrder: PdfBlock[]): void {
+  // Purely structural: map distinct heading font-size bands to [H1]..[H6].
+  // This is optional metadata used when flattening, and does not affect exclusion logic.
+  const headingBlocks = blocksInReadingOrder.filter((b) => b.included && b.type === 'Heading');
+  if (!headingBlocks.length) return;
+
+  const sizes = headingBlocks
+    .map(blockMedianFontSize)
+    .filter((n) => Number.isFinite(n) && n > 0)
+    .sort((a, b) => b - a); // descending
+
+  if (!sizes.length) return;
+
+  // Build size "bands" (merge near-equal sizes to tolerate renderer variation).
+  // Ratio threshold chosen to be layout-tolerant without collapsing clearly distinct levels.
+  const bands: number[] = [];
+  for (const s of sizes) {
+    if (!bands.length) {
+      bands.push(s);
+      continue;
+    }
+    const last = bands[bands.length - 1];
+    const ratio = last / s; // >= 1 because sorted desc
+    if (ratio <= 1.08) {
+      // Same band.
+      continue;
+    }
+    bands.push(s);
+    if (bands.length >= 6) break;
+  }
+
+  for (const b of headingBlocks) {
+    const s = blockMedianFontSize(b);
+    if (!s) {
+      b.headingLevel = 3;
+      continue;
+    }
+    // Find closest band by relative difference.
+    let bestIdx = 0;
+    let bestScore = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < bands.length; i++) {
+      const score = Math.abs(Math.log((bands[i] ?? s) / s));
+      if (score < bestScore) {
+        bestScore = score;
+        bestIdx = i;
+      }
+    }
+    b.headingLevel = Math.min(6, Math.max(1, bestIdx + 1)) as 1 | 2 | 3 | 4 | 5 | 6;
+  }
+}
 
 export async function parsePdfToNarrativeIndex(
   data: ArrayBuffer,
@@ -41,7 +106,9 @@ export async function parsePdfDocumentToNarrativeIndex(
   }
 
   // Structural header/footer repetition across pages.
-  const headerFooterLineIds = detectRepeatedHeaderFooterLines(allPageLines);
+  const repeatedHeaderFooterLineIds = detectRepeatedHeaderFooterLines(allPageLines);
+  const singletonHeaderFooterLineIds = detectSingletonEdgeHeaderFooterLines(allPageLines);
+  const headerFooterLineIds = new Set<string>([...repeatedHeaderFooterLineIds, ...singletonHeaderFooterLineIds]);
 
   // Pass 2: columns → blocks.
   for (const p of rawPages) {
@@ -188,10 +255,40 @@ export async function parsePdfDocumentToNarrativeIndex(
   // Tag captions (included narrative blocks adjacent to excluded figure/table regions).
   const captionTagged = tagCaptions(blocksInReadingOrder);
 
+  // Conservative footnote/boilerplate exclusion: small-font blocks near the bottom of a page.
+  // (Spec §7.1: footnotes unrelated to narrative should not enter the RSVP stream.)
+  const byPageBodyFont = new Map<number, number>();
+  for (const p of pagesOut) {
+    const mids = p.blocks
+      .filter((b) => b.included && b.type === 'Paragraph' && ((b.y0n + b.y1n) / 2) > 0.15 && ((b.y0n + b.y1n) / 2) < 0.85)
+      .map(blockMedianFontSize)
+      .filter((n) => Number.isFinite(n) && n > 0)
+      .sort((a, b) => a - b);
+    byPageBodyFont.set(p.pageIndex, mids.length ? median(mids) : 0);
+  }
+
+  for (const b of captionTagged) {
+    if (!b.included) continue;
+    if (b.type === 'FigureCaption' || b.type === 'TableCaption') continue;
+    const bodyFont = byPageBodyFont.get(b.pageIndex) ?? 0;
+    if (!(bodyFont > 0)) continue;
+    const bFont = blockMedianFontSize(b);
+    const w = b.x1n - b.x0n;
+    if (b.y0n > 0.83 && w < 0.95 && bFont > 0 && bFont <= bodyFont * 0.82) {
+      b.included = false;
+      b.excludeReason = 'MARGIN_DECORATIVE';
+      b.confidence = Math.min(b.confidence, 0.95);
+    }
+  }
+
   // Journal constraints (only when detected structurally).
   const scholarly = detectScholarlyAndReferences(captionTagged);
   const journalApplied = applyJournalConstraints(captionTagged, scholarly);
   const finalBlocks = journalApplied.blocks;
+
+  // Assign Markdown-style heading levels (1..6) structurally, based on font-size bands.
+  // This only affects how headings are emitted in the flattened narrative.
+  assignHeadingLevels(finalBlocks);
 
   // Persist post-processing decisions back onto per-page blocks.
   const byKey = new Map<string, PdfBlock>();
@@ -206,6 +303,7 @@ export async function parsePdfDocumentToNarrativeIndex(
         included: upd.included,
         excludeReason: upd.excludeReason,
         confidence: upd.confidence,
+        headingLevel: upd.headingLevel,
       }};
     }
   }

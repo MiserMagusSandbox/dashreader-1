@@ -3,7 +3,7 @@
 // NOTE: All PDF parsing/classification is done in src/pdf/* (spec-compliant pipeline).
 
 import type { App, Plugin, TFile } from 'obsidian';
-import type { PdfNarrativeIndex, PdfDocLike } from './pdf';
+import type { PdfNarrativeIndex } from './pdf';
 import { parsePdfToNarrativeIndex, parsePdfDocumentToNarrativeIndex } from './pdf';
 import { tokenizeForEngine } from './rsvp-engine';
 
@@ -15,6 +15,10 @@ export type PdfSelectionSnapshot = {
   page?: number; // 1-based
   xMidN?: number; // 0..1 (page-local, DOM top-left origin)
   yMidN?: number; // 0..1 (page-local, DOM top-left origin)
+  x0n?: number;
+  x1n?: number;
+  y0n?: number;
+  y1n?: number;
   at?: number;
   ageMs?: number;
 };
@@ -23,6 +27,11 @@ type NarrativeCacheEntry = {
   key: string;
   index?: PdfNarrativeIndex;
   inFlight?: Promise<PdfNarrativeIndex>;
+};
+
+type PdfDocLike = {
+  numPages: number;
+  getPage: (pageNumber: number) => Promise<any>;
 };
 
 function clamp01(n: number): number {
@@ -195,6 +204,10 @@ export class PdfViewIntegration {
       page: live.page,
       xMidN: live.xMidN,
       yMidN: live.yMidN,
+      x0n: live.x0n,
+      x1n: live.x1n,
+      y0n: live.y0n,
+      y1n: live.y1n,
     };
     this.lastSelectionAt = Date.now();
   }
@@ -295,7 +308,7 @@ export class PdfViewIntegration {
       if (pv && sameFile) {
         try {
           const pdfDoc = await this.getPdfDocumentFromActiveView(6000);
-          return await parsePdfDocumentToNarrativeIndex(pdfDoc, { maxPages });
+          return await parsePdfDocumentToNarrativeIndex(pdfDoc as unknown as PdfDocLike, { maxPages });
         } catch (e) {
           // Fall back to file-bytes parsing.
           console.warn('[DashReader][pdf] active-view pdfDocument parse failed; falling back to file bytes', e);
@@ -372,6 +385,10 @@ export class PdfViewIntegration {
     let page: number | undefined;
     let xMidN: number | undefined;
     let yMidN: number | undefined;
+    let x0n: number | undefined;
+    let x1n: number | undefined;
+    let y0n: number | undefined;
+    let y1n: number | undefined;
 
     try {
       if (sel.rangeCount < 1) return { text, rawText };
@@ -382,13 +399,48 @@ export class PdfViewIntegration {
         const num = this.readPageNumber(pageEl);
         if (num) page = num;
 
-        const r = range.getBoundingClientRect();
         const pr = pageEl.getBoundingClientRect();
         if (pr.width > 0 && pr.height > 0) {
-          const xm = ((r.left + r.right) / 2 - pr.left) / pr.width;
-          const ym = ((r.top + r.bottom) / 2 - pr.top) / pr.height;
+          const rects = Array.from(range.getClientRects?.() ?? []);
+          const cand = rects.length ? rects : [range.getBoundingClientRect()];
+
+          let minL = Number.POSITIVE_INFINITY;
+          let maxR = Number.NEGATIVE_INFINITY;
+          let minT = Number.POSITIVE_INFINITY;
+          let maxB = Number.NEGATIVE_INFINITY;
+          let any = false;
+
+          for (const rr of cand) {
+            // Only include the portion intersecting this page.
+            const left = Math.max(rr.left, pr.left);
+            const right = Math.min(rr.right, pr.right);
+            const top = Math.max(rr.top, pr.top);
+            const bottom = Math.min(rr.bottom, pr.bottom);
+            if (!(right > left && bottom > top)) continue;
+            any = true;
+            if (left < minL) minL = left;
+            if (right > maxR) maxR = right;
+            if (top < minT) minT = top;
+            if (bottom > maxB) maxB = bottom;
+          }
+
+          if (!any) {
+            const r = range.getBoundingClientRect();
+            minL = r.left; maxR = r.right; minT = r.top; maxB = r.bottom;
+          }
+
+          const xm = (((minL + maxR) / 2) - pr.left) / pr.width;
+          const ym = (((minT + maxB) / 2) - pr.top) / pr.height;
+          const rx0 = (minL - pr.left) / pr.width;
+          const rx1 = (maxR - pr.left) / pr.width;
+          const ry0 = (minT - pr.top) / pr.height;
+          const ry1 = (maxB - pr.top) / pr.height;
           if (Number.isFinite(xm)) xMidN = clamp01(xm);
           if (Number.isFinite(ym)) yMidN = clamp01(ym);
+          if (Number.isFinite(rx0)) x0n = clamp01(rx0);
+          if (Number.isFinite(rx1)) x1n = clamp01(rx1);
+          if (Number.isFinite(ry0)) y0n = clamp01(ry0);
+          if (Number.isFinite(ry1)) y1n = clamp01(ry1);
         }
       }
     } catch {
@@ -398,7 +450,7 @@ export class PdfViewIntegration {
     // Fallback page number from viewer if not found.
     if (!page) page = this.getCurrentPdfPageNumber(pv);
 
-    return { text, rawText, page, xMidN, yMidN };
+    return { text, rawText, page, xMidN, yMidN, x0n, x1n, y0n, y1n };
   }
 
   private readPageNumber(pageEl: HTMLElement): number | undefined {

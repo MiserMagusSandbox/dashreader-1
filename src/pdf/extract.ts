@@ -1,15 +1,15 @@
 // src/pdf/extract.ts
 // PDF.js extraction + deterministic conversion into geometric text items.
+//
+// IMPORTANT (spec):
+// - No vocabulary heuristics.
+// - Deterministic ordering.
+// - Tolerate renderer differences by relying on geometry + token-key normalisation downstream.
 
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
-import type {
-  DocumentInitParameters,
-  PDFDocumentLoadingTask,
-  TextItem,
-} from 'pdfjs-dist/types/src/display/api';
 
 import { clamp01, percentile, stableSortBy } from './utils';
-import type { PdfDocLike, PdfPageLike, PdfTextItem } from './types';
+import type { PdfDocLike, PdfPageLike, PdfTextContentLike, PdfTextItemLike, PdfTextItem } from './types';
 
 export type PdfPageRaw = {
   pageIndex: number;
@@ -19,40 +19,40 @@ export type PdfPageRaw = {
   items: PdfTextItem[];
 };
 
-type TextContentLike = { items?: unknown[] };
+function asNum(n: unknown, fallback = 0): number {
+  const v = Number(n);
+  return Number.isFinite(v) ? v : fallback;
+}
 
-function parsePageTextItems(pageIndex: number, page: PdfPageLike, content: unknown): PdfPageRaw {
-  const rawItems = (content as TextContentLike | null)?.items;
-  const items = Array.isArray(rawItems)
-    ? rawItems.filter((it: unknown): it is TextItem => typeof (it as Partial<TextItem>)?.str === 'string')
-    : [];
+function parseTransform(t: unknown): [number, number, number, number, number, number] {
+  const tr = Array.isArray(t) ? t : [];
+  return [asNum(tr[0]), asNum(tr[1]), asNum(tr[2]), asNum(tr[3]), asNum(tr[4]), asNum(tr[5])];
+}
+
+function parsePageTextItems(pageIndex: number, page: PdfPageLike, content: PdfTextContentLike): PdfPageRaw {
+  const rawItems: unknown[] = Array.isArray((content as any)?.items) ? (content as any).items : [];
 
   const viewport = page.getViewport({ scale: 1 });
-  const pageW = Number(viewport?.width ?? 1) || 1;
-  const pageH = Number(viewport?.height ?? 1) || 1;
+  const pageW = asNum((viewport as any)?.width, 1) || 1;
+  const pageH = asNum((viewport as any)?.height, 1) || 1;
 
   const parsed: PdfTextItem[] = [];
   const fontSizes: number[] = [];
 
-  for (const it of items) {
-    const s = typeof it?.str === 'string' ? it.str : '';
+  for (const raw of rawItems) {
+    const it = raw as PdfTextItemLike;
+    const s = typeof (it as any)?.str === 'string' ? String((it as any).str) : '';
     if (!s || !s.trim()) continue;
 
-    const tr = (it?.transform ?? []) as number[];
-    const a = Number(tr[0] ?? 0);
-    const b = Number(tr[1] ?? 0);
-    const c = Number(tr[2] ?? 0);
-    const d = Number(tr[3] ?? 0);
-    const x = Number(tr[4] ?? 0);
-    const y = Number(tr[5] ?? 0);
+    const [a, b, c, d, x, y] = parseTransform((it as any)?.transform);
     const rotationRad = Math.atan2(b, a);
 
-    // Approx font size; deterministic and purely geometric.
+    // Approx font size (purely geometric, deterministic).
     const fontSize = Math.max(Math.hypot(a, b), Math.hypot(c, d), Math.abs(d), 0);
     if (Number.isFinite(fontSize) && fontSize > 0) fontSizes.push(fontSize);
 
-    const w = Number(it?.width ?? 0);
-    const h = Number(it?.height ?? 0);
+    const w = asNum((it as any)?.width, 0);
+    const h = asNum((it as any)?.height, 0);
     const x2 = x + (Number.isFinite(w) ? w : 0);
     const y2 = y + (Number.isFinite(h) ? h : 0);
 
@@ -93,26 +93,24 @@ function parsePageTextItems(pageIndex: number, page: PdfPageLike, content: unkno
 
 export async function loadPdfDocument(data: ArrayBuffer): Promise<PdfDocLike> {
   const uint8 = new Uint8Array(data);
-  const loadingTask: PDFDocumentLoadingTask = getDocument({
+  const loadingTask: any = getDocument({
     data: uint8,
     // Required in Obsidian to avoid spawning a worker.
     disableWorker: true,
-  } as DocumentInitParameters);
-  // At runtime this is a PDFDocumentProxy, but we type it as PdfDocLike to keep the
-  // pipeline compatible with Obsidian's viewer-supplied pdfDocument object.
-  return (await loadingTask.promise) as unknown as PdfDocLike;
+  } as any);
+  return (await loadingTask.promise) as PdfDocLike;
 }
 
 export async function extractPdfPages(pdf: PdfDocLike, opts?: { maxPages?: number }): Promise<PdfPageRaw[]> {
   const maxPages = opts?.maxPages ?? 200;
-  const totalPages = Math.min(Number(pdf?.numPages ?? 0), maxPages);
+  const totalPages = Math.min(Number((pdf as any)?.numPages ?? 0), maxPages);
   if (!totalPages) return [];
 
   const out: PdfPageRaw[] = [];
   for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
     try {
-      const page = await pdf.getPage(pageNum);
-      const content = await page.getTextContent();
+      const page = (await (pdf as any).getPage(pageNum)) as PdfPageLike;
+      const content = (await (page as any).getTextContent()) as PdfTextContentLike;
       out.push(parsePageTextItems(pageNum - 1, page, content));
     } catch (err) {
       console.error('[DashReader][pdf-pipeline] failed to extract page', { pageNum, err });
@@ -123,16 +121,25 @@ export async function extractPdfPages(pdf: PdfDocLike, opts?: { maxPages?: numbe
   return out;
 }
 
-export function estimateLineYToleranceNorm(bodyFontSize: number, pageHeightPx: number): number {
-  // Baseline tolerance in normalized units, derived only from geometry.
-  // Slightly generous to survive PDF text-layer fragmentation.
-  const px = Math.max(1, bodyFontSize || 10);
-  const tolPx = Math.max(1.5, px * 0.55);
-  return tolPx / Math.max(1, pageHeightPx);
-}
+
+// ---- Line-building parameter estimates (structural-only, deterministic)
+// These helpers live here because they depend on PDF.js geometric font size estimates.
 
 export function estimateSpaceThresholdPx(bodyFontSize: number): number {
-  // Deterministic, geometry-derived spacing threshold.
-  const px = Math.max(1, bodyFontSize || 10);
-  return Math.max(1.5, px * 0.25);
+  // Insert a space between adjacent text items when their x-gap exceeds this.
+  // Structural: proportional to font size.
+  if (!(bodyFontSize > 0) || !Number.isFinite(bodyFontSize)) return 2.5;
+  return Math.min(10, Math.max(1.5, bodyFontSize * 0.33));
+}
+
+export function estimateLineYToleranceNorm(bodyFontSize: number, pageHeightPx: number): number {
+  // When grouping items into a line, treat y-mids within this tolerance as the same line.
+  // Structural: proportional to font size, normalized by page height.
+  const h = (pageHeightPx > 0 && Number.isFinite(pageHeightPx)) ? pageHeightPx : 1000;
+  const tolPx = (bodyFontSize > 0 && Number.isFinite(bodyFontSize))
+    ? Math.min(12, Math.max(2.0, bodyFontSize * 0.45))
+    : 3.5;
+  const tolN = tolPx / h;
+  // Clamp to avoid pathological grouping on very small/large pages.
+  return Math.min(0.02, Math.max(0.001, tolN));
 }

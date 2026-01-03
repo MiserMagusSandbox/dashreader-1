@@ -19,7 +19,9 @@ export function flattenNarrative(blocksInReadingOrder: PdfBlock[]): {
   for (const b of blocksInReadingOrder) {
     if (!b.included) continue;
     if (segments.length) segments.push({ text: '\n\n' });
-    const blockText = b.type === 'Heading' ? `[H3]${b.text}` : b.text;
+    const blockText = b.type === 'Heading'
+      ? `[H${Math.min(6, Math.max(1, b.headingLevel ?? 3))}]${b.text}`
+      : b.text;
     segments.push({
       text: blockText,
       meta: { pageIndex: b.pageIndex, columnIndex: b.columnIndex, blockIndex: b.blockIndex },

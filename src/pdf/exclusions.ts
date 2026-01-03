@@ -3,7 +3,7 @@
 // No vocabulary-based filtering.
 
 import type { PdfLine } from './types';
-import { normaliseForRepetition, quantize } from './utils';
+import { median, normaliseForRepetition, quantize } from './utils';
 
 export type LineExclusion = {
   lineId: string;
@@ -22,12 +22,14 @@ export function detectRepeatedHeaderFooterLines(pages: { pageIndex: number; line
   for (const p of pages) {
     p.lines.forEach((l, idx) => {
       // candidate bands only
-      if (!(l.yMid < 0.08 || l.yMid > 0.92)) return;
+      // Slightly wider than 8% to survive PDF crop-box variations.
+      if (!(l.yMid < 0.12 || l.yMid > 0.88)) return;
       const sig = normaliseForRepetition(l.text);
       if (!sig || sig.length < 3) return;
 
-      const yBand = l.yMid < 0.08 ? 'H' : 'F';
-      const qx = Math.round(quantize((l.x0n + l.x1n) / 2, 0.02) * 100);
+      const yBand = l.yMid < 0.12 ? 'H' : 'F';
+      // Coarser quantization makes repetition robust to minor renderer/layout variation.
+      const qx = Math.round(quantize((l.x0n + l.x1n) / 2, 0.05) * 100);
       const qy = yBand;
       const key = `${yBand}|${qx}|${sig}`;
       counts.set(key, (counts.get(key) ?? 0) + 1);
@@ -42,15 +44,75 @@ export function detectRepeatedHeaderFooterLines(pages: { pageIndex: number; line
   const out = new Set<string>();
   for (const p of pages) {
     p.lines.forEach((l, idx) => {
-      if (!(l.yMid < 0.08 || l.yMid > 0.92)) return;
+      if (!(l.yMid < 0.12 || l.yMid > 0.88)) return;
       const sig = normaliseForRepetition(l.text);
       if (!sig || sig.length < 3) return;
-      const yBand = l.yMid < 0.08 ? 'H' : 'F';
-      const qx = Math.round(quantize((l.x0n + l.x1n) / 2, 0.02) * 100);
+      const yBand = l.yMid < 0.12 ? 'H' : 'F';
+      const qx = Math.round(quantize((l.x0n + l.x1n) / 2, 0.05) * 100);
       const key = `${yBand}|${qx}|${sig}`;
       if (repeatedKeys.has(key)) out.add(lineKey(p.pageIndex, idx));
     });
   }
+  return out;
+}
+
+export function detectSingletonEdgeHeaderFooterLines(pages: { pageIndex: number; lines: PdfLine[] }[]): Set<string> {
+  // Structural per-page header/footer detection for non-repeated page chrome
+  // (e.g., a journal logo on page 1 like "Cells").
+  //
+  // This intentionally uses only geometry:
+  // - extreme top/bottom position
+  // - short width
+  // - misalignment with the dominant body left edge
+  const out = new Set<string>();
+
+  for (const p of pages) {
+    const lines = p.lines;
+    if (!lines.length) continue;
+
+    // Estimate body font-size (mid-band) for small-font footer / boilerplate detection.
+    const bodyFonts = lines
+      .filter((l) => l.yMid > 0.15 && l.yMid < 0.85)
+      .map((l) => l.fontSize)
+      .filter((n) => Number.isFinite(n) && n > 0)
+      .sort((a, b) => a - b);
+    const bodyFont = bodyFonts.length ? median(bodyFonts) : 0;
+
+    // Estimate dominant body-left x0n from wide mid-band lines.
+    const bodyCandidates = lines
+      .filter((l) => l.yMid > 0.15 && l.yMid < 0.85)
+      .filter((l) => (l.x1n - l.x0n) >= 0.35)
+      .map((l) => l.x0n)
+      .filter((n) => Number.isFinite(n) && n >= 0 && n <= 1)
+      .sort((a, b) => a - b);
+
+    const bodyLeft = bodyCandidates.length ? median(bodyCandidates) : 0.0;
+
+    for (let idx = 0; idx < lines.length; idx++) {
+      const l = lines[idx];
+      const w = l.x1n - l.x0n;
+      if (!(w > 0)) continue;
+
+      const extremeTop = l.yMid < 0.09;
+      const extremeBottom = l.yMid > 0.91;
+      if (!(extremeTop || extremeBottom)) continue;
+
+      const smallFont = bodyFont > 0 && Number.isFinite(l.fontSize) && l.fontSize > 0 && l.fontSize <= bodyFont * 0.85;
+
+      // Very wide lines near the *top* edge are likely titles/section headers; keep them.
+      // Wide lines near the *bottom* edge are often publication boilerplate; allow exclusion
+      // when they are small-font relative to body.
+      if (w >= 0.55 && (extremeTop || !smallFont)) continue;
+
+      // If the line's left edge doesn't match the dominant body-left, treat as page chrome.
+      // Threshold chosen to tolerate minor drift but still catch logos/running titles.
+      const misaligned = Math.abs((l.x0n ?? 0) - bodyLeft) > 0.035;
+      if (!misaligned) continue;
+
+      out.add(lineKey(p.pageIndex, idx));
+    }
+  }
+
   return out;
 }
 
