@@ -242,8 +242,8 @@ export class PdfParser {
 
       const rawTrim = String(it.str ?? '').trim();
       const normTrim = rawTrim
-        .replace(/[＋﹢⁺]/g, '+')
-        .replace(/[−﹣－⁻]/g, '-')
+        .replace(/[＋﹢⁺₊]/g, '+')
+        .replace(/[−﹣－⁻₋]/g, '-')
         .replace(/[‐-‒–—−]/g, '-')
         .replace(/±/g, '±');
 
@@ -289,9 +289,9 @@ export class PdfParser {
 
     // normalize common plus/minus/dash/slash variants first
     s = s
-      .replace(/[＋﹢⁺]/g, '+')
-      .replace(/[−﹣－⁻]/g, '-')
-      .replace(/[‐-‒–—−]/g, '-')
+      .replace(/[＋﹢⁺₊]/g, '+')
+      .replace(/[−﹣－⁻₋]/g, '-')
+      .replace(/[‐-‒–—−]/g, '-') // include U+2011 (non-breaking hyphen) as "-"
       .replace(/[⁄∕／]/g, '/')
       .replace(/[\\﹨＼]/g, '\\');
 
@@ -300,17 +300,18 @@ export class PdfParser {
     s = s.replace(/([A-Za-z0-9])([+＋﹢⁺₊])(?=[A-Z])/g, '$1$2 ');
 
     // 2) Break after '-' when it is acting like a “negative marker” separator before another marker.
-    //    CD14-HLA -> CD14- HLA
-    //    HLA-DR-CD33 -> HLA-DR- CD33   (second '-' only; first is internal)
-    const MARKER_PREFIX =
-      '(?:CD|HLA|TCR|MHC|CCR|CXCR|IL|IFN|TNF|FC|IG|TLR|MCP|LAMP|TAM)';
-    s = s.replace(
-      new RegExp(
-        `([A-Z0-9])([\\-\\u2010\\u2011\\u2012\\u2013\\u2014\\u2212\\uFE63\\uFF0D\\u207B\\u208B])(?=(?:${MARKER_PREFIX})[A-Za-z0-9]|[A-Z]{2,}\\d)`,
-        'g'
-      ),
-      '$1$2 '
-    );
+    //    Generic (no acronym list): only fires when the LEFT side looks “marker-ish” (has an uppercase),
+    //    and either side carries a digit/lowercase (common in CD11b, CD14, CD33, etc.).
+    s = s.replace(/([A-Za-z0-9]+)-([A-Z][A-Za-z0-9]+)/g, (m, left: string, right: string) => {
+      // avoid splitting normal hyphenated words like "anti-CD38"
+      if (!/[A-Z]/.test(left)) return m;
+
+      // split when it’s very likely a marker boundary (digits/lowercase are strong signals)
+      if (/\d/.test(left) || /\d/.test(right) || /[a-z]/.test(right)) return `${left}- ${right}`;
+
+      // otherwise treat as an internal dash like "HLA-DR"
+      return m;
+    });
 
     // 3) Break after slash/backslash when followed by letters (common receptor pairs)
     //    CD47/SIRP -> CD47/ SIRP

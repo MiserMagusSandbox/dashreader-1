@@ -149,9 +149,9 @@ export class PdfViewIntegration {
       .trim();
 
     if (!core) return false;
-    if (!/[\/\\+\-‐-‒–—−]/.test(core)) return false;
+    if (!/[\/\\+\-\u00AD\u2010\u2011\u2012\u2013\u2014\u2212\uFE63\uFF0D\u207B\u208B]/.test(core)) return false;
 
-    const parts = core.split(/[\/\\+\-‐-‒–—−]+/).map(p => p.trim()).filter(Boolean);
+    const parts = core.split(/[\/\\+\-\u00AD\u2010\u2011\u2012\u2013\u2014\u2212\uFE63\uFF0D\u207B\u208B]+/).map(p => p.trim()).filter(Boolean);
     if (parts.length < 2) return false;
 
     return parts.some(p =>
@@ -168,7 +168,7 @@ export class PdfViewIntegration {
     const s = String(token ?? '');
     if (!s) return s;
 
-    const isDelim = (c: string): boolean => /[\/\\+\-‐-‒–—−]/.test(c);
+    const isDelim = (c: string): boolean => /[\/\\+\-\u00AD\u2010\u2011\u2012\u2013\u2014\u2212\uFE63\uFF0D\u207B\u208B]/.test(c);
 
     let i = Math.max(0, Math.min(localOffset ?? 0, s.length));
     if (i === s.length && i > 0) i -= 1;
