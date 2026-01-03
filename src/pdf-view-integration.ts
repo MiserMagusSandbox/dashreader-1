@@ -135,6 +135,68 @@ export class PdfViewIntegration {
     return false;
   }
 
+  // Marker chains: CD11b+CD14-HLA-DR-... or FcγRIIa/b etc.
+  // We treat these as "noisy" even if PDF.js returns them as a single whitespace-token,
+  // because users must be able to start from ANY internal segment they double-click.
+  private looksLikeMarkerChainToken(raw: string): boolean {
+    const s0 = String(raw ?? '').trim();
+    if (!s0) return false;
+
+    const core = s0
+      .replace(/^\[(?:H\d+|CALLOUT:[^\]]+)\]/i, '')
+      .replace(/^[\(\[\{（［｛]+/, '')
+      .replace(/[\)\]\}）］｝]+$/, '')
+      .trim();
+
+    if (!core) return false;
+    if (!/[\/\\+\-‐-‒–—−]/.test(core)) return false;
+
+    const parts = core.split(/[\/\\+\-‐-‒–—−]+/).map(p => p.trim()).filter(Boolean);
+    if (parts.length < 2) return false;
+
+    return parts.some(p =>
+      this.isLikelyAcronymFragment(p) ||
+      /[0-9]/.test(p) ||
+      /[Α-Ωα-ω]/.test(p) ||
+      /[A-Z]/.test(p)
+    );
+  }
+
+  // Given a token and a local caret offset, return the segment under the caret,
+  // using marker-chain delimiters as boundaries.
+  private extractMarkerChainSegment(token: string, localOffset: number): string {
+    const s = String(token ?? '');
+    if (!s) return s;
+
+    const isDelim = (c: string): boolean => /[\/\\+\-‐-‒–—−]/.test(c);
+
+    let i = Math.max(0, Math.min(localOffset ?? 0, s.length));
+    if (i === s.length && i > 0) i -= 1;
+
+    // If caret lands on a delimiter, pick nearest non-delimiter (prefer right on ties).
+    if (i >= 0 && i < s.length && isDelim(s.charAt(i))) {
+      let left = i;
+      while (left > 0 && isDelim(s.charAt(left))) left--;
+
+      let right = i;
+      while (right < s.length && isDelim(s.charAt(right))) right++;
+
+      const leftOk = left >= 0 && left < s.length && !isDelim(s.charAt(left));
+      const rightOk = right >= 0 && right < s.length && !isDelim(s.charAt(right));
+
+      if (rightOk && (!leftOk || (right - i) <= (i - left))) i = right;
+      else if (leftOk) i = left;
+    }
+
+    let l = i;
+    while (l > 0 && !isDelim(s.charAt(l - 1))) l--;
+
+    let r = i;
+    while (r < s.length && !isDelim(s.charAt(r))) r++;
+
+    return s.slice(l, r);
+  }
+
   private isAmbiguousAcronymSelection(selection: string, matchKey: string): boolean {
     const raw = String(selection ?? '').trim();
     if (!raw || !matchKey) return false;
@@ -196,33 +258,57 @@ export class PdfViewIntegration {
     const tokKey = PdfParser.normalizePdfTokenForMatch(rawTok);
     if (!tokKey) return false;
 
-    if (tokKey === sel) return true;
+    // Symmetric charge handling:
+    // - existing behavior: token has +/- but selection doesn't  (CD38+ token vs "CD38" selection)
+    // - missing behavior (your current break): selection has +/- but token doesn't (common due to PDF.js bleed/join)
+    const selNoCharge = this.stripChargeSuffixKey(sel);
+    const selHasCharge = selNoCharge !== sel;
 
-    // Allow selection without charge suffix: CD38 vs CD38plus, HLA-DR vs HLA-DRminus
+    const keyMatchesSel = (k: string): boolean => {
+      if (!k) return false;
+      if (k === sel) return true;
+
+      const kNo = this.stripChargeSuffixKey(k);
+      const kHasCharge = kNo !== k;
+
+      // token has charge, selection doesn't
+      if (!selHasCharge && kHasCharge && kNo === sel) return true;
+
+      // selection has charge, token doesn't
+      if (selHasCharge && !kHasCharge && k === selNoCharge) return true;
+
+      // exactly one side has charge: compare bases (prevents plus-vs-minus when both sides have charge)
+      if (kNo && selNoCharge && kNo === selNoCharge && kHasCharge !== selHasCharge) return true;
+
+      return false;
+    };
+
+    if (keyMatchesSel(tokKey)) return true;
+
     const tokNoCharge = this.stripChargeSuffixKey(tokKey);
-    if (tokNoCharge && tokNoCharge === sel) return true;
 
     // Allow selecting the base when superscript/subscript suffixes are glued to the token
-    const supBase = this.stripSuperscriptSuffixKey(tokNoCharge, rawTok) ?? this.stripSuperscriptSuffixKey(tokKey, rawTok);
-    const supBaseNoCharge = supBase ? this.stripChargeSuffixKey(supBase) : undefined;
-    if (supBase && supBase === sel) return true;
-    if (supBaseNoCharge && supBaseNoCharge === sel) return true;
+    const supBase =
+      this.stripSuperscriptSuffixKey(tokNoCharge, rawTok) ??
+      this.stripSuperscriptSuffixKey(tokKey, rawTok);
+    if (supBase && keyMatchesSel(supBase)) return true;
 
     // Allow selecting just the acronym part for common suffix patterns:
     // CCL vs CCL-3, IP3 vs IP3-independent, TAM vs TAM-mediated
-    if (sel.length >= 2 && tokNoCharge.startsWith(sel)) {
-      const rest = tokNoCharge.slice(sel.length);
+    // IMPORTANT: if selection gained +/- via normalization, use its base for this rule.
+    const selPrefix = selHasCharge ? selNoCharge : sel;
+    if (selPrefix.length >= 2 && tokNoCharge.startsWith(selPrefix)) {
+      const rest = tokNoCharge.slice(selPrefix.length);
 
-      // Only allow “prefix matches” for acronym-ish tokens.
       const core = rawTok
         .replace(/^\[(?:H\d+|CALLOUT:[^\]]+)\]/i, '')
         .replace(/^[\(\[\{（［｛]+/, '')
         .replace(/[\)\]\}）］｝]+$/, '');
-      const firstFrag = core.split(/[\/\\\-‐-‒–—−]/)[0] ?? '';
+      const firstFrag = core.split(/[\/\\\-\u00AD\u2010\u2011\u2012\u2013\u2014\u2212\uFE63\uFF0D\u207B\u208B]/)[0] ?? '';
       const isAcr = this.isLikelyAcronymFragment(firstFrag);
 
-      if (/^-[0-9]{1,4}$/.test(rest)) return true;         // -3, -10, etc
-      if (/^-[ivx]{1,6}$/.test(rest)) return true;         // -II, -IV, etc
+      if (/^-[0-9]{1,4}$/.test(rest)) return true;           // -3, -10, etc
+      if (/^-[ivx]{1,6}$/.test(rest)) return true;           // -II, -IV, etc
       if (/^-[a-z]{2,24}$/.test(rest) && isAcr) return true; // -mediated, -independent, ...
     }
 
@@ -236,21 +322,36 @@ export class PdfViewIntegration {
       if (parts.length >= 2) {
         for (const p of parts) {
           const k = PdfParser.normalizePdfTokenForMatch(p);
-          if (k && (k === sel || this.stripChargeSuffixKey(k) === sel)) return true;
+          if (k && keyMatchesSel(k)) return true;
         }
       }
     }
 
-    // Hyphenated tokens: if first segment is an acronym, allow matching that acronym alone
+    // Hyphenated tokens: allow matching ANY marker-ish segment (caps/digits/Greek), not just the first
     {
       const core = rawTok
         .replace(/^\[(?:H\d+|CALLOUT:[^\]]+)\]/i, '')
         .replace(/^[\(\[\{（［｛]+/, '')
         .replace(/[\)\]\}）］｝]+$/, '');
-      const first = core.split(/[‐-‒–—−]/)[0] ?? '';
-      if (first && first !== core && this.isLikelyAcronymFragment(first)) {
-        const k = PdfParser.normalizePdfTokenForMatch(first);
-        if (k === sel) return true;
+
+      const parts = core
+        .split(/[\-\u00AD\u2010\u2011\u2012\u2013\u2014\u2212\uFE63\uFF0D\u207B\u208B]/)
+        .map(s => s.trim())
+        .filter(Boolean);
+
+      if (parts.length >= 2) {
+        for (const p of parts) {
+          const markerish =
+            this.isLikelyAcronymFragment(p) ||
+            /[0-9]/.test(p) ||
+            /[A-Z]/.test(p) ||
+            /[Α-Ωα-ω]/.test(p);
+
+          if (!markerish) continue;
+
+          const k = PdfParser.normalizePdfTokenForMatch(p);
+          if (k && keyMatchesSel(k)) return true;
+        }
       }
     }
 
@@ -464,7 +565,16 @@ export class PdfViewIntegration {
     let r = i;
     while (r < s.length && !isWs(s.charAt(r))) r++;
 
-    const tok = s.slice(l, r).trim();
+    const tokRaw = s.slice(l, r);
+    let out = tokRaw;
+
+    // If this is a biomarker/marker chain, return the sub-segment under the caret,
+    // not the whole chain.
+    if (this.looksLikeMarkerChainToken(tokRaw)) {
+      out = this.extractMarkerChainSegment(tokRaw, i - l);
+    }
+
+    const tok = String(out ?? '').trim();
     return tok || undefined;
   }
 
@@ -485,16 +595,33 @@ export class PdfViewIntegration {
       return this.countTokensLikeEngineNoBreaks(norm) === 1 ? norm : undefined;
     };
 
-    // 1) Try event target text (PDF.js often clicks a word-level span)
     const target: any = (evt as any)?.target ?? null;
-    const targetText = typeof target?.textContent === 'string' ? target.textContent : undefined;
-
-    const fromTarget = accept(targetText);
-    if (fromTarget) return fromTarget;
-
     const doc: any = target?.ownerDocument ?? document;
 
-    // 2) Use current selection range start as a stable anchor (works even when caretFromPoint is unavailable)
+    // 1) caret-from-point first (best signal of what was actually clicked)
+    const me: any = evt as any;
+    const x = typeof me?.clientX === 'number' ? me.clientX : undefined;
+    const y = typeof me?.clientY === 'number' ? me.clientY : undefined;
+
+    if (x != null && y != null) {
+      // Firefox-style
+      const pos = doc.caretPositionFromPoint?.(x, y);
+      if (pos?.offsetNode && typeof pos.offset === 'number') {
+        const tok = this.extractTokenAroundOffset(pos.offsetNode, pos.offset);
+        const ok = accept(tok);
+        if (ok) return ok;
+      }
+
+      // WebKit-style
+      const range: Range | null = doc.caretRangeFromPoint?.(x, y) ?? null;
+      if (range) {
+        const tok = this.extractTokenAroundOffset(range.startContainer, range.startOffset);
+        const ok = accept(tok);
+        if (ok) return ok;
+      }
+    }
+
+    // 2) Selection range start fallback
     try {
       const sel: any = doc.getSelection?.() ?? window.getSelection?.();
       if (sel && typeof sel.rangeCount === 'number' && sel.rangeCount > 0) {
@@ -507,27 +634,10 @@ export class PdfViewIntegration {
       // ignore
     }
 
-    // 3) caret-from-point fallback (best when coords exist)
-    const me: any = evt as any;
-    const x = typeof me?.clientX === 'number' ? me.clientX : undefined;
-    const y = typeof me?.clientY === 'number' ? me.clientY : undefined;
-    if (x == null || y == null) return undefined;
-
-    // Firefox-style
-    const pos = doc.caretPositionFromPoint?.(x, y);
-    if (pos?.offsetNode && typeof pos.offset === 'number') {
-      const tok = this.extractTokenAroundOffset(pos.offsetNode, pos.offset);
-      const ok = accept(tok);
-      if (ok) return ok;
-    }
-
-    // WebKit-style
-    const range: Range | null = doc.caretRangeFromPoint?.(x, y) ?? null;
-    if (range) {
-      const tok = this.extractTokenAroundOffset(range.startContainer, range.startOffset);
-      const ok = accept(tok);
-      if (ok) return ok;
-    }
+    // 3) Target text last (avoid locking onto whole marker chains when caret info exists)
+    const targetText = typeof target?.textContent === 'string' ? target.textContent : undefined;
+    const fromTarget = accept(targetText);
+    if (fromTarget) return fromTarget;
 
     return undefined;
   }
@@ -2025,7 +2135,8 @@ export class PdfViewIntegration {
       const normTok0 = this.countTokensLikeEngineNoBreaks(norm0);
 
       // If Selection.toString() is already a single token, keep it (just normalized).
-      const selectionAlreadySingle = tokCount0 === 1 && normTok0 === 1;
+      const selectionAlreadySingle =
+        tokCount0 === 1 && normTok0 === 1 && !this.looksLikeMarkerChainToken(text);
 
       if (selectionAlreadySingle) {
         text = norm0;
@@ -2073,7 +2184,8 @@ export class PdfViewIntegration {
             const norm0 = this.normalizeSingleWordSelection(text);
             const normTok0 = this.countTokensLikeEngineNoBreaks(norm0);
 
-            const selectionAlreadySingle = tokCount0 === 1 && normTok0 === 1;
+            const selectionAlreadySingle =
+              tokCount0 === 1 && normTok0 === 1 && !this.looksLikeMarkerChainToken(text);
 
             if (selectionAlreadySingle) {
               text = norm0;

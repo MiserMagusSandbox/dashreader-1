@@ -239,6 +239,16 @@ export class PdfParser {
 
       const fontRatio = ctx.bodyFont > 0 ? it.font / ctx.bodyFont : 1;
       const trimmedLen = it.str.trim().length;
+
+      const rawTrim = String(it.str ?? '').trim();
+      const normTrim = rawTrim
+        .replace(/[＋﹢⁺]/g, '+')
+        .replace(/[−﹣－⁻]/g, '-')
+        .replace(/[‐-‒–—−]/g, '-')
+        .replace(/±/g, '±');
+
+      const isChargeOrSign = (normTrim === '+' || normTrim === '-' || normTrim === '±');
+
       const looksOverlay =
         trimmedLen > 0 &&
         trimmedLen <= 14 &&
@@ -246,15 +256,12 @@ export class PdfParser {
         !/\w{13,}/.test(it.str);
 
       // Figure/axis overlays often show up as tiny single words floating near images.
-      // Add an extra guard for extremely short words that are far narrower than body columns.
       const looksLikeFloatingFigureWord =
         trimmedLen > 0 &&
         trimmedLen <= 8 &&
         fontRatio < 0.72 &&
         Math.max(0, Math.min(1, (it.x2 - it.x) / Math.max(ctx.pageW, 1))) <= 0.18;
 
-      // Suppress tiny fragments that sit inside a narrow horizontal window with body-like angle.
-      // These are typically stray chart labels/axis ticks bleeding into the text layer.
       const looksLikeNarrowFigureFragment =
         trimmedLen > 0 &&
         trimmedLen <= 10 &&
@@ -262,7 +269,8 @@ export class PdfParser {
         ang <= 12 &&
         Math.max(0, Math.min(1, (it.x2 - it.x) / Math.max(ctx.pageW, 1))) <= 0.12;
 
-      if (looksOverlay || looksLikeFloatingFigureWord || looksLikeNarrowFigureFragment) {
+      // Do NOT treat +/-/± as overlay fragments (they are often real charge markers emitted as tiny glyph items)
+      if (!isChargeOrSign && (looksOverlay || looksLikeFloatingFigureWord || looksLikeNarrowFigureFragment)) {
         stats.figureOverlay++;
         continue;
       }
@@ -289,7 +297,7 @@ export class PdfParser {
 
     // 1) Break after '+' when it’s immediately followed by a marker-ish uppercase start.
     //    CD33+CD15 -> CD33+ CD15
-    s = s.replace(/([A-Za-z0-9])\+(?=[A-Z])/g, '$1+ ');
+    s = s.replace(/([A-Za-z0-9])([+＋﹢⁺₊])(?=[A-Z])/g, '$1$2 ');
 
     // 2) Break after '-' when it is acting like a “negative marker” separator before another marker.
     //    CD14-HLA -> CD14- HLA
@@ -297,8 +305,11 @@ export class PdfParser {
     const MARKER_PREFIX =
       '(?:CD|HLA|TCR|MHC|CCR|CXCR|IL|IFN|TNF|FC|IG|TLR|MCP|LAMP|TAM)';
     s = s.replace(
-      new RegExp(`([A-Z0-9])-(?=(?:${MARKER_PREFIX})[A-Za-z0-9]|[A-Z]{2,}\\d)`, 'g'),
-      '$1- '
+      new RegExp(
+        `([A-Z0-9])([\\-\\u2010\\u2011\\u2012\\u2013\\u2014\\u2212\\uFE63\\uFF0D\\u207B\\u208B])(?=(?:${MARKER_PREFIX})[A-Za-z0-9]|[A-Z]{2,}\\d)`,
+        'g'
+      ),
+      '$1$2 '
     );
 
     // 3) Break after slash/backslash when followed by letters (common receptor pairs)
@@ -446,7 +457,7 @@ export class PdfParser {
     s = s
       .replace(/[＋﹢⁺]/g, '+')
       .replace(/[−﹣－⁻]/g, '-')
-      .replace(/[‐-‒–—−]/g, '-');
+      .replace(/[\-\u00AD\u2010\u2011\u2012\u2013\u2014\u2212\uFE63\uFF0D]/g, '-');
 
     try {
       s = s.normalize('NFKD');
@@ -496,7 +507,7 @@ export class PdfParser {
 
   private static cleanupLineText(s: string): string {
     let out = PdfParser.normalizeLigaturesAndHiddenGlyphs(s);
-    out = PdfParser.normalizeSupSubChars(out);
+    // Keep super/sub glyphs in display text; matching normalizes separately.
 
     // Strip inline watermark tails that get merged into body lines (OUP, etc.)
     out = out.replace(/\s*[-–—]?\s*Downloaded from https?:\/\/\S.*$/i, '');
@@ -818,13 +829,19 @@ export class PdfParser {
 
       const tokCount = PdfParser.countTokensLikeEngineNoBreaks(s);
 
-      // Reject tiny garbage; allow single-word real headers like "Optimization".
+      // Allow common running headers/footers:
+      // - page numbers become "#" after normalization
+      // - short journal acronyms like "JWHT"
       if (tokCount === 1) {
-        if (s.length < 8) return true;
+        if (/^#+$/.test(s)) return false;           // page number signature
+        if (/^[a-z]{3,}$/i.test(s)) return false;  // short all-letter header/footer
+        // keep rejecting tiny noise (single punctuation etc.)
+        if (s.length < 2) return true;
       } else {
         if (tokCount < 2) return true;
       }
 
+      // Keep this for multi-token junk, but DO NOT use it to kill 3–5 letter acronyms.
       if (s.length < 6) return true;
 
       const compact = s.replace(/\s+/g, '');
@@ -899,7 +916,8 @@ export class PdfParser {
       const topBand = lines.filter((l) => l.yNorm >= headerBand);
       const botBand = lines.filter((l) => l.yNorm <= footerBand);
 
-      const headerCandidates = (topBand.length ? topBand : lines.slice(0, edgeLines))
+      const topNByY = [...lines].sort((a,b)=>b.yNorm-a.yNorm).slice(0, edgeLines);
+      const headerCandidates = (topBand.length ? topBand : topNByY)
         .filter((l) => l.tokenCountNoBreaks <= maxTokens);
 
       const footerCandidates = (botBand.length ? botBand : lines.slice(Math.max(0, lines.length - edgeLines)))
@@ -1055,6 +1073,7 @@ export class PdfParser {
     if (!parsed.length) return { lines: [], removedDisplayEquations: [] };
 
     const tolY = Math.max(1.5, bodyFont * 0.35);
+    const pageW = Number(viewport?.width ?? 1) || 1;
 
     // Group into "raw lines" by Y (PDF coords: higher Y = closer to top)
     parsed.sort((a, b) => (b.y - a.y) || (a.x - b.x));
@@ -1089,9 +1108,13 @@ export class PdfParser {
       const sortedGaps = gaps.filter((g) => g > 0).sort((a, b) => a - b);
       const medianGap = PdfParser.percentile(sortedGaps, 0.5);
       const gap75 = PdfParser.percentile(sortedGaps, 0.75);
-      const baseGap = Math.max(14, bodyFont * 4.5, pageW * 0.025);
-      const adaptiveGap = Math.max(baseGap, medianGap * 3.2, gap75 * 2.2);
-      const splitGap = Math.min(adaptiveGap, Math.max(pageW * 0.20, baseGap * 4));
+
+      // Lower baseline: typical inter-column gutters in academic PDFs are often 20–30 px.
+      const baseGap = Math.max(12, bodyFont * 2.2, pageW * 0.02);     // ~22px at bodyFont=10
+      const adaptiveGap = Math.max(baseGap, medianGap * 6.0, gap75 * 3.6);
+
+      // Ensure we split on realistic gutters but don’t over-split within normal word spacing.
+      const splitGap = Math.min(adaptiveGap, pageW * 0.16);
 
       for (const it of its) {
         if (!cur.length) {
@@ -1240,7 +1263,6 @@ export class PdfParser {
     // ---------------------------------------------------------------------
     // Column-aware ordering (x-band clustering, deterministic)
     // ---------------------------------------------------------------------
-    const pageW = Number(viewport?.width ?? 1) || 1;
 
     const lineXRange2 = (its: It[]): { x1: number; x2: number; xMid: number; w: number } => {
       let x1 = Number.POSITIVE_INFINITY;
@@ -1680,6 +1702,24 @@ export class PdfParser {
         }
       }
 
+      const xr = lineXRange2(ln.items);
+      const fontRatio = base > 0 ? (avgFont / base) : 1;
+
+      // Drop likely axis/panel labels: short, narrow, small-ish, not sentence/caption markers.
+      const looksLikeFigureLabelLine =
+        !inHeaderFooterBand &&
+        tokenCountNoBreaks <= 4 &&
+        xr.w <= pageW * 0.22 &&
+        fontRatio <= 0.95 &&
+        !/\b(fig|figure|table|eq|equation)\b/i.test(sigSource) &&
+        !/[.?!]$/.test(sigSource) &&
+        (
+          (sigSource.match(/\d/g)?.length ?? 0) >= 1 ||  // numeric ticks
+          sigSource.trim().length <= 5                    // panel letters / tiny labels
+        );
+
+      if (looksLikeFigureLabelLine) continue;
+
       out.push({
         text: s,
         norm,
@@ -1955,17 +1995,27 @@ export class PdfParser {
 
       const kept2 = (i === 0) ? filterPage1FrontMatter(kept) : kept;
       const cleaned = PdfParser.normalizeExtractedText(kept2.map((l) => l.text).join('\n'));
+      const contributesText = !!cleaned;
+
+      if (contributesText && wordCursor > 0) {
+        wordCursor += PdfParser.countTokensLikeEngine('\n\n');
+      }
 
       pageWordStarts.push(wordCursor);
-      wordCursor += PdfParser.countTokensLikeEngine(cleaned);
-      pageTexts.push(cleaned);
+
+      // IMPORTANT: pageTexts must stay aligned with page indices for selectionPage mapping.
+      pageTexts.push(cleaned); // cleaned is '' if no content
+
+      if (contributesText) {
+        wordCursor += PdfParser.countTokensLikeEngine(cleaned);
+      }
 
       if (i < pagesLines.length - 1) {
         wordCursor += PdfParser.countTokensLikeEngine('\n\n');
       }
     }
 
-    const fullText = PdfParser.normalizeExtractedText(pageTexts.join('\n\n'));
+    const fullText = pageTexts.filter(Boolean).join('\n\n').trim();
     return { fullText, pageTexts, pageWordStarts };
   }
 
