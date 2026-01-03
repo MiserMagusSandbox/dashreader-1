@@ -4,7 +4,7 @@ import { DashReaderSettingTab } from './src/settings';
 import { DashReaderSettings } from './src/types';
 import { validateSettings } from './src/services/settings-validator';
 import { PdfViewIntegration } from './src/pdf-view-integration';
-import { PdfParser } from './src/pdf-parser';
+import { hitTestBlock, resolveSelectionToTokenIndex } from './src/pdf';
 import { TFile } from 'obsidian';
 
 // Temporary Step-2 debug (remove when PDF command behaviour is stable).
@@ -224,11 +224,9 @@ export default class DashReaderPlugin extends Plugin {
         selectionSource,
         selectionRaw,
         normalized,
-        selectionTokens: this.pdf.tokenizeLikeEngine(normalized),
         page: (selInfo as any).page,
-        wordHintInPage: (selInfo as any).wordHintInPage,
-        yInPage: (selInfo as any).yInPage,
-        probe: (selInfo as any).probe,
+        xMidN: (selInfo as any).xMidN,
+        yMidN: (selInfo as any).yMidN,
       });
     }
 
@@ -241,9 +239,7 @@ export default class DashReaderPlugin extends Plugin {
     }
 
     const selPage = selInfo.page ?? this.pdf.getCurrentPdfPageNumber(pdfView);
-    const selWordHintInPage = selInfo.wordHintInPage;
-    const selProbe = selInfo.probe;
-    const selYInPage = selInfo.yInPage;
+    const selYMidN = (selInfo as any).yMidN;
 
     if (!selPage) {
       new Notice('Could not determine which PDF page the selection is on');
@@ -251,150 +247,45 @@ export default class DashReaderPlugin extends Plugin {
     }
 
     const inHeaderFooterBand =
-      typeof selYInPage === 'number' &&
-      Number.isFinite(selYInPage) &&
-      (selYInPage <= 0.10 || selYInPage >= 0.90);
+      typeof selYMidN === 'number' &&
+      Number.isFinite(selYMidN) &&
+      (selYMidN <= 0.10 || selYMidN >= 0.90);
 
     try {
-      let fullText = '';
-      let pageMap: { pageTexts: string[]; pageWordStarts: number[] } | undefined;
-
-      try {
-        const res = await this.pdf.extractAllTextFromActivePdfViewWithPageMap(200);
-        fullText = res.fullText;
-        pageMap = { pageTexts: res.pageTexts, pageWordStarts: res.pageWordStarts };
-      } catch {
-        const res = await this.pdf.extractFullTextViaFileFallbackWithPageMap(file, 200);
-        fullText = res.fullText;
-        pageMap = { pageTexts: res.pageTexts, pageWordStarts: res.pageWordStarts };
-      }
-
-      if (!fullText) {
-        new Notice('No text could be extracted from this PDF');
+      // Spec-compliant PDF pipeline: narrative-only + column/block aware.
+      const index = await this.pdf.getOrParseNarrativeIndex(file, { maxPages: 200 });
+      if (!index.fullText) {
+        new Notice('No narrative text could be extracted from this PDF');
         return;
       }
 
-      const selectionLookup = this.pdf.findStartWordIndexFromPdfSelection(
-        fullText,
-        selection,
-        pageMap,
-        selPage,
-        selWordHintInPage,
-        selProbe,
-        selYInPage
-      );
+      const pageIndex = Math.max(0, (selPage | 0) - 1);
 
-      let startWordIndex = selectionLookup.index;
+      const ctx =
+        typeof (selInfo as any).xMidN === 'number' &&
+        typeof (selInfo as any).yMidN === 'number'
+          ? hitTestBlock(index, pageIndex, (selInfo as any).xMidN, (selInfo as any).yMidN)
+          : null;
 
-      if (startWordIndex === undefined) {
-        // Step 1 DEVLOG instrumentation (console): selection anchor debug on failures.
-        console.info('[DashReader][pdf-anchor-miss]', {
-          selectionRaw,
-          selectionClamped: selection,
-          diagnostics: selectionLookup.diagnostics,
-        });
-
+      const tokenIndex = resolveSelectionToTokenIndex(index, selection, ctx);
+      if (tokenIndex === null) {
         if (inHeaderFooterBand) {
-          new Notice(
-            'Selected word may be in a header/footer region (and could be removed during extraction). Trying selected text only.'
-          );
+          new Notice('Selected word appears near a header/footer; it may be excluded. Reading the selected text only.');
         }
-        fallbackToSelectionOnly('start-index-not-found');
+        fallbackToSelectionOnly('selection-not-found-in-narrative');
         return;
       }
-
-      // Enforce "no drift": align to the nearest actual occurrence of the selected token.
-      const aligned = this.pdf.alignStartWordIndexToSelection(fullText, selection, startWordIndex, selProbe, 80);
-      if (aligned === undefined) {
-        try {
-          console.debug('[DashReader][pdf-anchor-align-fail]', {
-            selectionRaw,
-            selectionClamped: selection,
-            normMatchKey: this.pdf.getMatchKeyForToken(selection),
-            startWordIndex,
-            page: selPage,
-            wordHintInPage: selWordHintInPage,
-            yInPage: selYInPage,
-            probe: selProbe,
-            windowAtStart: this.pdf.getEngineTokenWindow(fullText, startWordIndex, 6),
-          });
-        } catch {}
-        fallbackToSelectionOnly('anchor-align-fail');
-        return;
-      }
-      if (aligned !== startWordIndex) {
-        selectionLookup.diagnostics.chosenReason = `${selectionLookup.diagnostics.chosenReason ?? 'match'} -> aligned-nearby`;
-      }
-      startWordIndex = aligned;
-
-      // Final hard guard: token at startWordIndex must match the selected token key.
-      // If not, scan locally for the nearest matching token.
-      {
-        const toks = this.pdf.tokenizeLikeEngine(fullText);
-        const selTok = selection; // already clamped by normalizeSingleWordSelection
-        const tokenAt = toks[startWordIndex] ?? '';
-
-        if (!this.pdf.tokenMatchesSelectionToken(tokenAt, selTok)) {
-          const radius = 12;
-          let best: number | undefined;
-          let bestDist = Number.POSITIVE_INFINITY;
-
-          const lo = Math.max(0, startWordIndex - radius);
-          const hi = Math.min(toks.length - 1, startWordIndex + radius);
-
-          for (let i = lo; i <= hi; i++) {
-            const tok = toks[i];
-            if (!tok || tok === '\n') continue;
-            if (this.pdf.tokenMatchesSelectionToken(tok, selTok)) {
-              const d = Math.abs(i - startWordIndex);
-              if (d < bestDist) {
-                best = i;
-                bestDist = d;
-              }
-            }
-          }
-
-          if (best !== undefined) {
-            selectionLookup.diagnostics.chosenReason = `${selectionLookup.diagnostics.chosenReason ?? 'match'} -> snapped-nearby`;
-            startWordIndex = best;
-          } else {
-            fallbackToSelectionOnly('selection-token-not-found-nearby');
-            return;
-          }
-        }
-      }
-
-      selectionLookup.diagnostics.chosenIndex = startWordIndex;
-
-      const dbg = this.pdf.getEngineTokenWindow(fullText, startWordIndex, 20);
-
-      console.info('[DashReader][pdf-launch]', {
-        selectionRaw,
-        selectionNormalized: selection,
-        selectionMatchKey: selectionLookup.diagnostics.selectionMatchKey,
-        selectionTokens: this.pdf.tokenizeLikeEngine(selection),
-        page: selPage,
-        wordHintInPage: selWordHintInPage,
-        yInPage: selYInPage,
-        probe: selProbe,
-        tokenWindow: dbg,
-        candidates: selectionLookup.diagnostics.candidates,
-        preferredEngineIndex: selectionLookup.diagnostics.preferredEngineIndex,
-        preferredSource: selectionLookup.diagnostics.preferredSource,
-        chosenIndex: selectionLookup.diagnostics.chosenIndex,
-        chosenReason: selectionLookup.diagnostics.chosenReason,
-      });
 
       const modal = this.openModal({ skipInitialAutoLoad: true });
-
-      modal.loadPlainText(fullText, {
+      modal.loadPlainText(index.fullText, {
         fileName: file.name,
         lineNumber: 1,
-        cursorPosition: startWordIndex,
+        cursorPosition: tokenIndex,
       });
     } catch (err) {
       console.error('[DashReader] Launch from cursor (PDF) failed', err);
-      new Notice('Could not extract text from this PDF');
+      const msg = err instanceof Error ? err.message : String(err);
+      new Notice(msg ? `Could not parse this PDF: ${msg}` : 'Could not parse this PDF');
     }
   }
 
@@ -461,11 +352,9 @@ export default class DashReaderPlugin extends Plugin {
         rawSelection: (selInfo as any).rawText,
         selection,
         normalizedSingleWord: this.pdf.normalizeSingleWordSelection(selection),
-        selectionTokens: this.pdf.tokenizeLikeEngine(selection),
         page: (selInfo as any).page,
-        wordHintInPage: (selInfo as any).wordHintInPage,
-        yInPage: (selInfo as any).yInPage,
-        probe: (selInfo as any).probe,
+        xMidN: (selInfo as any).xMidN,
+        yMidN: (selInfo as any).yMidN,
       });
     }
 
@@ -498,33 +387,16 @@ export default class DashReaderPlugin extends Plugin {
     }
 
     try {
-      const text = pdfView
-        ? await this.pdf.extractAllTextFromActivePdfView(200)
-        : await this.pdf.extractFullTextViaFileFallback(file, 200);
-
-      if (!text) {
-        new Notice('No text could be extracted from this PDF');
+      const index = await this.pdf.getOrParseNarrativeIndex(file, { maxPages: 200 });
+      if (!index.fullText) {
+        new Notice('No narrative text could be extracted from this PDF');
         return;
       }
-      modal.loadPlainText(text, { fileName: file.name, lineNumber: 1 });
+      modal.loadPlainText(index.fullText, { fileName: file.name, lineNumber: 1 });
     } catch (err) {
-      console.error('[DashReader] PDF extract failed; trying file fallback', err);
-
-      if (pdfView) {
-        try {
-          const text = await this.pdf.extractFullTextViaFileFallback(file, 200);
-          if (!text) {
-            new Notice('No text could be extracted from this PDF');
-            return;
-          }
-          modal.loadPlainText(text, { fileName: file.name, lineNumber: 1 });
-          return;
-        } catch (err2) {
-          console.error('[DashReader] PDF file fallback extract failed', err2);
-        }
-      }
-
-      new Notice('Could not extract text from this PDF');
+      console.error('[DashReader] PDF parse failed', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      new Notice(msg ? `Could not parse this PDF: ${msg}` : 'Could not parse this PDF');
     }
   }
 
@@ -538,169 +410,38 @@ export default class DashReaderPlugin extends Plugin {
     }
 
     try {
-      const pdfDoc = await this.pdf.getPdfDocumentForDebug(6000);
+      const index = await this.pdf.getOrParseNarrativeIndex(file, { maxPages: 60 });
 
-      const report = await PdfParser.parsePdfDocumentToDebugReport(pdfDoc, {
-        maxPages: 60,
-        sampleLines: 10,
-      });
+      const exclusionCountsByReason: Record<string, number> = {};
+      for (const e of index.exclusions ?? []) {
+        const k = String((e as any).reason ?? 'UNKNOWN');
+        exclusionCountsByReason[k] = (exclusionCountsByReason[k] ?? 0) + 1;
+      }
 
-      const page1 = report.pages.find((p) => p.page === 1) ?? null;
+      const selection = this.pdf.getCachedPdfSelection();
 
       const slim = {
         file: String((file as any)?.path ?? (file as any)?.name ?? ''),
-        totalPages: report.totalPages,
-        headerBand: report.headerBand,
-        footerBand: report.footerBand,
-        headerSigs: report.headerSigs,
-        footerSigs: report.footerSigs,
-        page1: page1
-          ? {
-              removedHeaderLines: page1.removedHeaderLines,
-              removedFooterLines: page1.removedFooterLines,
-              topLines: page1.topLines.map((l) => ({ yNorm: l.yNorm, text: l.text, norm: l.norm })),
-              bottomLines: page1.bottomLines.map((l) => ({ yNorm: l.yNorm, text: l.text, norm: l.norm })),
-            }
-          : null,
-        removedCountsByPage: report.pages.map((p) => ({
-          page: p.page,
-          removedHeaderLines: p.removedHeaderLines,
-          removedFooterLines: p.removedFooterLines,
-        })),
+        parsedPages: index.pageCount,
+        isLikelyScholarly: index.isLikelyScholarly,
+        referencesHardStopTokenIndex: (index as any).referencesHardStopTokenIndex,
+        tokenCount: index.tokens?.length ?? 0,
+        exclusionCountsByReason,
+        sampleExclusions: (index.exclusions ?? []).slice(0, 40),
       };
 
-      // --- Anchor trace: capture selection -> preferred -> candidates (NO behaviour changes) ---
-      const filePath = String((file as any)?.path ?? (file as any)?.name ?? '').trim();
-
-      const liveSel = this.pdf.getLivePdfSelection();
-      const cachedSel = this.pdf.getCachedPdfSelection();
-
-      const liveOk = !!liveSel.text && (!liveSel.filePath || liveSel.filePath === filePath);
-      const cachedOk =
-        !!cachedSel.text &&
-        (cachedSel.ageMs ?? Number.POSITIVE_INFINITY) <= 15_000 &&
-        (!cachedSel.filePath || cachedSel.filePath === filePath);
-
-      const selInfo = cachedOk ? cachedSel : liveOk ? liveSel : { text: '' } as any;
-
-      const selectionRaw = String(selInfo.text ?? '').trim();
-      const normalized = selectionRaw ? this.pdf.normalizeSingleWordSelection(selectionRaw) : '';
-
-      const anchorTrace: any = {
+      const bundle = {
+        slim,
         selection: {
-          selectionRaw,
-          normalizedSingleWord: normalized,
-          selectionTokens: normalized ? this.pdf.tokenizeLikeEngine(normalized) : [],
-          selectionSource: cachedOk ? 'cache' : liveOk ? 'live' : 'none',
-          eventType: (selInfo as any).eventType ?? undefined,
-          page: selInfo.page,
-          wordHintInPage: selInfo.wordHintInPage,
-          yInPage: selInfo.yInPage,
-          probe: selInfo.probe,
-          filePath,
-          ageMs: (selInfo as any).ageMs,
+          text: selection.text,
+          page: selection.page,
+          xMidN: (selection as any).xMidN,
+          yMidN: (selection as any).yMidN,
+          ageMs: selection.ageMs,
+          filePath: selection.filePath,
+          eventType: (selection as any).eventType,
         },
-        preferred: null,
-        candidatesOnPage: [],
-        note: '',
       };
-
-      if (!normalized) {
-        anchorTrace.note = 'No cached/live PDF selection available. Double-click a token in the PDF, then run this command immediately.';
-      } else if (this.pdf.countTokensLikeEngineNoBreaks(normalized) !== 1) {
-        anchorTrace.note = 'Selection is not a single engine token after normalisation (needs single word).';
-      } else {
-        // Extract text + pageMap (same extraction family as launch uses)
-        let fullText = '';
-        let pageTexts: string[] = [];
-        let pageWordStarts: number[] = [];
-
-        try {
-          const res = await this.pdf.extractAllTextFromActivePdfViewWithPageMap(200);
-          fullText = res.fullText;
-          pageTexts = res.pageTexts;
-          pageWordStarts = res.pageWordStarts;
-        } catch {
-          const res = await this.pdf.extractFullTextViaFileFallbackWithPageMap(file, 200);
-          fullText = res.fullText;
-          pageTexts = res.pageTexts;
-          pageWordStarts = res.pageWordStarts;
-        }
-
-        const page = Number(selInfo.page ?? 1) || 1;
-        const pageIdx = Math.max(0, page - 1);
-        const pageText = pageTexts[pageIdx] ?? '';
-        const pageBase = pageWordStarts[pageIdx] ?? 0;
-
-        const pageToks = this.pdf.tokenizeLikeEngine(pageText);
-        const wordsInPageNoBreaks = this.pdf.countTokensLikeEngineNoBreaks(pageText);
-
-        const noBreakToEngineIndex = (text: string, noBreakIdx: number): number => {
-          const toks = this.pdf.tokenizeLikeEngine(text);
-          let nb = 0;
-          const target = Math.max(0, noBreakIdx | 0);
-          for (let i = 0; i < toks.length; i++) {
-            const tok = toks[i];
-            if (!tok || tok === '\n') continue;
-            if (nb >= target) return i;
-            nb++;
-          }
-          return Math.max(0, toks.length - 1);
-        };
-
-        let preferredNoBreak: number | undefined =
-          (typeof selInfo.wordHintInPage === 'number' && Number.isFinite(selInfo.wordHintInPage))
-            ? Math.max(0, selInfo.wordHintInPage)
-            : undefined;
-
-        if (preferredNoBreak === undefined && typeof selInfo.yInPage === 'number' && Number.isFinite(selInfo.yInPage)) {
-          preferredNoBreak = Math.max(0, Math.min(wordsInPageNoBreaks - 1, Math.round(wordsInPageNoBreaks * selInfo.yInPage)));
-        }
-
-        const preferredEngineInPage =
-          preferredNoBreak === undefined ? undefined : noBreakToEngineIndex(pageText, preferredNoBreak);
-
-        const windowTokens = (toks: string[], idx: number, r: number) => {
-          const lo = Math.max(0, idx - r);
-          const hi = Math.min(toks.length, idx + r + 1);
-          return toks.slice(lo, hi);
-        };
-
-        anchorTrace.preferred = {
-          preferredNoBreak,
-          preferredEngineInPage,
-          preferredTokenWindow: typeof preferredEngineInPage === 'number'
-            ? windowTokens(pageToks, preferredEngineInPage, 12)
-            : [],
-          wordsInPageNoBreaks,
-          pageTextLen: pageText.length,
-        };
-
-        // pull candidates (top 25) using the same matcher helper you already have
-        const inPageCandidates = this.pdf.findCandidateMatchIndicesInText(
-          pageText,
-          normalized,
-          preferredEngineInPage,
-          25
-        );
-
-        anchorTrace.candidatesOnPage = inPageCandidates.map((inPageIdx2: number) => ({
-          inPageIndex: inPageIdx2,
-          globalIndex: pageBase + inPageIdx2,
-          distToPreferred: typeof preferredEngineInPage === 'number' ? Math.abs(inPageIdx2 - preferredEngineInPage) : undefined,
-          tokenAt: pageToks[inPageIdx2] ?? '',
-          tokenWindow: windowTokens(pageToks, inPageIdx2, 6),
-        }));
-
-        // optional: show the actual extracted token at the preferred slot
-        if (typeof preferredEngineInPage === 'number') {
-          anchorTrace.preferred.preferredTokenAt = pageToks[preferredEngineInPage] ?? '';
-        }
-
-        anchorTrace.note = 'If candidates are empty, selection cannot be located in the extracted token stream (this is the “unlaunchable” root cause).';
-      }
-
-      const bundle = { slim, anchorTrace };
       
       const mdBlock =
         `\n### ${file.name} – extraction + anchor trace\n\n` +
@@ -719,13 +460,7 @@ export default class DashReaderPlugin extends Plugin {
         await this.app.vault.create(devlogPath, `# DashReader PDF Debug Log\n${mdBlock}`);
       }
 
-      // Optional: tiny console line so you can confirm it ran without huge logs
-      console.debug('[DashReader][pdf-extraction-report-slim] appended', {
-        file: slim.file,
-        totalPages: slim.totalPages,
-        headerSigs: slim.headerSigs.length,
-        footerSigs: slim.footerSigs.length,
-      });
+      console.debug('[DashReader][pdf-extraction-report] appended', { file: slim.file, parsedPages: slim.parsedPages });
 
       new Notice('Extraction report appended to DEVLOG_PDF.md');
     } catch (e) {
